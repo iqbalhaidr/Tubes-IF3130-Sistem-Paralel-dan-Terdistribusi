@@ -1,0 +1,119 @@
+version: '3.8'
+
+# Raft Key-Value Store Cluster Configuration
+# This sets up a 4-node Raft cluster with a separate client container
+
+services:
+  # Raft Node 1
+  node1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: raft-node1
+    environment:
+      - NODE_ID=node1
+      - PORT=3000
+      - CLUSTER_NODES=node1:3000,node2:3000,node3:3000,node4:3000
+      - ELECTION_TIMEOUT_MIN=150
+      - ELECTION_TIMEOUT_MAX=300
+      - HEARTBEAT_INTERVAL=50
+      - LOG_LEVEL=INFO
+    networks:
+      - raft-network
+    ports:
+      - "3001:3000"  # Expose for external access
+    cap_add:
+      - NET_ADMIN  # Required for tc command (network delay)
+    restart: unless-stopped
+
+  # Raft Node 2
+  node2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: raft-node2
+    environment:
+      - NODE_ID=node2
+      - PORT=3000
+      - CLUSTER_NODES=node1:3000,node2:3000,node3:3000,node4:3000
+      - ELECTION_TIMEOUT_MIN=150
+      - ELECTION_TIMEOUT_MAX=300
+      - HEARTBEAT_INTERVAL=50
+      - LOG_LEVEL=INFO
+    networks:
+      - raft-network
+    ports:
+      - "3002:3000"
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+
+  # Raft Node 3
+  node3:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: raft-node3
+    environment:
+      - NODE_ID=node3
+      - PORT=3000
+      - CLUSTER_NODES=node1:3000,node2:3000,node3:3000,node4:3000
+      - ELECTION_TIMEOUT_MIN=150
+      - ELECTION_TIMEOUT_MAX=300
+      - HEARTBEAT_INTERVAL=50
+      - LOG_LEVEL=INFO
+    networks:
+      - raft-network
+    ports:
+      - "3003:3000"
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+
+  # Raft Node 4
+  node4:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: raft-node4
+    environment:
+      - NODE_ID=node4
+      - PORT=3000
+      - CLUSTER_NODES=node1:3000,node2:3000,node3:3000,node4:3000
+      - ELECTION_TIMEOUT_MIN=150
+      - ELECTION_TIMEOUT_MAX=300
+      - HEARTBEAT_INTERVAL=50
+      - LOG_LEVEL=INFO
+    networks:
+      - raft-network
+    ports:
+      - "3004:3000"
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+
+  # Client container - for running CLI from outside the cluster
+  client:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: raft-client
+    environment:
+      - LOG_LEVEL=INFO
+    command: ["node", "dist/client/cli.js", "--server", "node1:3000", "--server", "node2:3000", "--server", "node3:3000", "--server", "node4:3000"]
+    networks:
+      - raft-network
+    stdin_open: true
+    tty: true
+    depends_on:
+      - node1
+      - node2
+      - node3
+      - node4
+
+networks:
+  raft-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
