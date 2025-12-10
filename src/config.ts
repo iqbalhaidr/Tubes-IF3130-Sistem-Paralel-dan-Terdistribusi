@@ -33,6 +33,8 @@ export interface RaftConfig {
     electionTimeout: [number, number];
     /** Heartbeat interval in milliseconds */
     heartbeatInterval: number;
+    /** If true, this node is joining and should not participate in elections */
+    joinMode: boolean;
 }
 
 /**
@@ -85,12 +87,16 @@ export function loadConfig(): RaftConfig {
 
     const heartbeatInterval = parseInt(process.env.HEARTBEAT_INTERVAL || '50', 10);
 
+    // JOIN_MODE: if true, this node is being added dynamically and should not vote/elect
+    const joinMode = process.env.JOIN_MODE === 'true';
+
     return {
         nodeId,
         port,
         clusterNodes,
         electionTimeout: [electionTimeoutMin, electionTimeoutMax],
         heartbeatInterval,
+        joinMode,
     };
 }
 

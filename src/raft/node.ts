@@ -79,7 +79,7 @@ export class RaftNode extends EventEmitter implements IRaftNode {
         const handlers = createRpcHandlers(this);
         this.rpcServer.registerHandlers(handlers);
 
-        logger.info(`Initialized with ${config.clusterNodes.length} nodes in cluster`);
+        logger.info(`Initialized with ${config.clusterNodes.length} nodes in cluster${config.joinMode ? ' (JOIN MODE - elections disabled)' : ''}`);
     }
 
     // ============================================================================
@@ -105,7 +105,12 @@ export class RaftNode extends EventEmitter implements IRaftNode {
     getLeaderAddress(): string | null {
         if (!this.state.leaderId) return null;
         const leader = this.state.clusterConfig.find(s => s.id === this.state.leaderId);
-        return leader ? `${leader.address}:${leader.port}` : null;
+        if (leader) {
+            return `${leader.address}:${leader.port}`;
+        }
+        // Fallback: if leader is not in our config (e.g., new node that won election),
+        // assume the leaderId is the hostname and use default port
+        return `${this.state.leaderId}:3000`;
     }
 
     getLog(): LogEntry[] {
@@ -239,6 +244,13 @@ export class RaftNode extends EventEmitter implements IRaftNode {
     private onElectionTimeout(): void {
         if (this.state.nodeState === NodeState.LEADER) {
             return; // Leaders don't have election timeout
+        }
+
+        // In join mode, don't start elections - wait to be added by leader
+        if (this.config.joinMode) {
+            logger.debug('Join mode active, skipping election');
+            this.resetElectionTimer();
+            return;
         }
 
         logger.info('Election timeout, starting election');

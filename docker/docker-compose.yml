@@ -24,7 +24,7 @@ services:
       - "3001:3000"  # Expose for external access
     cap_add:
       - NET_ADMIN  # Required for tc command (network delay)
-    restart: unless-stopped
+    restart: on-failure
 
   # Raft Node 2
   node2:
@@ -46,7 +46,7 @@ services:
       - "3002:3000"
     cap_add:
       - NET_ADMIN
-    restart: unless-stopped
+    restart: on-failure
 
   # Raft Node 3
   node3:
@@ -68,7 +68,7 @@ services:
       - "3003:3000"
     cap_add:
       - NET_ADMIN
-    restart: unless-stopped
+    restart: on-failure
 
   # Raft Node 4
   node4:
@@ -90,7 +90,7 @@ services:
       - "3004:3000"
     cap_add:
       - NET_ADMIN
-    restart: unless-stopped
+    restart: on-failure
 
   # Client container - for running CLI from outside the cluster
   client:
