@@ -327,19 +327,34 @@ export class RaftNode extends EventEmitter implements IRaftNode {
             lastLogTerm,
         };
 
-        let votesReceived = 1; // Vote for self
         const votesNeeded = Math.floor(this.state.clusterConfig.length / 2) + 1;
 
         // Send RequestVote to all other nodes
         const otherNodes = this.state.clusterConfig.filter(s => s.id !== this.config.nodeId);
 
-        for (const node of otherNodes) {
+        // Collect all vote promises to avoid race condition
+        const votePromises = otherNodes.map(node =>
             this.rpcClient.call<RequestVoteResponse>(node, 'request_vote', request)
-                .then(response => {
-                    // Check if we're still a candidate
-                    if (this.state.nodeState !== NodeState.CANDIDATE) {
-                        return;
-                    }
+                .catch(err => {
+                    logger.debug(`RequestVote to ${node.id} failed: ${err.message}`);
+                    // Return rejected vote on error
+                    return { term: 0, voteGranted: false } as RequestVoteResponse;
+                })
+        );
+
+        // Wait for all responses and count votes atomically
+        Promise.allSettled(votePromises).then(results => {
+            // Check if still candidate (might have become follower)
+            if (this.state.nodeState !== NodeState.CANDIDATE) {
+                logger.debug('No longer candidate, ignoring election results');
+                return;
+            }
+
+            let votesReceived = 1; // Self vote
+
+            for (const result of results) {
+                if (result.status === 'fulfilled') {
+                    const response = result.value;
 
                     // Check for higher term
                     if (response.term > this.state.persistent.currentTerm) {
@@ -350,22 +365,24 @@ export class RaftNode extends EventEmitter implements IRaftNode {
                     // Count vote
                     if (response.voteGranted && response.term === this.state.persistent.currentTerm) {
                         votesReceived++;
-                        logger.info(`Received vote from ${node.id}, total: ${votesReceived}/${votesNeeded}`);
-
-                        // Check if we have majority
-                        if (votesReceived >= votesNeeded) {
-                            this.transitionTo(NodeState.LEADER, `won election with ${votesReceived} votes`);
-                        }
                     }
-                })
-                .catch(err => {
-                    logger.debug(`RequestVote to ${node.id} failed: ${err.message}`);
-                });
-        }
+                }
+            }
 
-        // Handle single node cluster
-        if (votesReceived >= votesNeeded) {
-            this.transitionTo(NodeState.LEADER, `won election with ${votesReceived} votes`);
+            logger.info(`Election result: ${votesReceived}/${votesNeeded} votes`);
+
+            // Check if won election
+            if (votesReceived >= votesNeeded) {
+                this.transitionTo(NodeState.LEADER, `won election with ${votesReceived} votes`);
+            } else {
+                logger.info(`Did not win election, only got ${votesReceived}/${votesNeeded} votes`);
+            }
+        });
+
+        // Handle single node cluster (no other nodes to vote)
+        if (otherNodes.length === 0) {
+            logger.info('Single node cluster, becoming leader immediately');
+            this.transitionTo(NodeState.LEADER, 'single node cluster');
         }
     }
 
