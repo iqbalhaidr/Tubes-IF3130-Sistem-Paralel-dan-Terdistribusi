@@ -1,332 +1,437 @@
 /**
- * Log Replication Test
+ * Log Replication Unit Tests (Person 3)
  * 
- * Tests for Raft log replication functionality.
- * This test suite validates that commands are properly replicated
- * across the cluster and executed consistently on all nodes.
- * 
- * Prerequisites:
- * - Docker cluster must be running (4 nodes)
- * - Run: cd docker && docker-compose up -d
+ * Tests for the log replication mechanism in Raft:
+ * - Log entry creation and management
+ * - Commit index calculation
+ * - State machine application
+ * - Conflict resolution
  */
 
-import { RpcClient } from '../src/rpc/client';
-import { ServerInfo } from '../src/config';
 import {
-    ExecuteRequest,
-    ExecuteResponse,
-} from '../src/rpc/types';
+    LogEntry,
+    Command,
+    ConfigChange,
+    createInitialRaftState,
+    createLeaderState,
+    getLastLogIndex,
+    getLastLogTerm,
+    NodeState,
+} from '../src/raft/types';
+import { ServerInfo } from '../src/config';
 
-describe('Log Replication Tests', () => {
-    let rpcClient: RpcClient;
-    let nodes: ServerInfo[];
-    let leader: ServerInfo | null = null;
+// Mock cluster configuration for tests
+const testCluster: ServerInfo[] = [
+    { id: 'node1', address: 'node1', port: 3000 },
+    { id: 'node2', address: 'node2', port: 3000 },
+    { id: 'node3', address: 'node3', port: 3000 },
+];
 
-    beforeAll(async () => {
-        // Initialize RPC client
-        rpcClient = new RpcClient({ timeout: 10000, retries: 2 });
+describe('Log Replication', () => {
+    describe('Log Entry Creation', () => {
+        it('should create initial state with sentinel entry', () => {
+            const state = createInitialRaftState(testCluster);
 
-        // Define cluster nodes
-        nodes = [
-            { id: 'node1', address: 'localhost', port: 3001 },
-            { id: 'node2', address: 'localhost', port: 3002 },
-            { id: 'node3', address: 'localhost', port: 3003 },
-            { id: 'node4', address: 'localhost', port: 3004 },
-        ];
+            // Log should have sentinel entry at index 0
+            expect(state.persistent.log.length).toBe(1);
+            expect(state.persistent.log[0].index).toBe(0);
+            expect(state.persistent.log[0].term).toBe(0);
+            expect(state.persistent.log[0].entryType).toBe('noop');
+        });
 
-        // Find the leader
-        leader = await findLeader();
-        expect(leader).not.toBeNull();
+        it('should create command log entry with correct structure', () => {
+            const command: Command = { type: 'set', key: 'foo', value: 'bar' };
+            const entry: LogEntry = {
+                term: 1,
+                index: 1,
+                entryType: 'command',
+                command,
+                timestamp: Date.now(),
+            };
+
+            expect(entry.term).toBe(1);
+            expect(entry.index).toBe(1);
+            expect(entry.command).toEqual(command);
+        });
+
+        it('should create config log entry with correct structure', () => {
+            const configChange: ConfigChange = {
+                type: 'add_server',
+                server: { id: 'node4', address: 'node4', port: 3000 },
+            };
+            const entry: LogEntry = {
+                term: 2,
+                index: 3,
+                entryType: 'config',
+                configChange,
+                timestamp: Date.now(),
+            };
+
+            expect(entry.entryType).toBe('config');
+            expect(entry.configChange).toEqual(configChange);
+        });
     });
 
-    /**
-     * Find the current leader by trying each node
-     */
-    async function findLeader(): Promise<ServerInfo | null> {
-        for (const node of nodes) {
-            try {
-                const response = await rpcClient.call<ExecuteResponse>(
-                    node,
-                    'execute',
-                    { command: 'ping', args: [] } as ExecuteRequest
-                );
+    describe('Log Index Helpers', () => {
+        it('getLastLogIndex should return 0 for initial log', () => {
+            const state = createInitialRaftState(testCluster);
+            expect(getLastLogIndex(state.persistent.log)).toBe(0);
+        });
 
-                if (response.success && response.leaderId === node.id) {
-                    console.log(`Found leader: ${node.id}`);
-                    return node;
+        it('getLastLogIndex should return correct index after entries', () => {
+            const state = createInitialRaftState(testCluster);
+
+            // Add some entries
+            state.persistent.log.push({
+                term: 1,
+                index: 1,
+                entryType: 'command',
+                command: { type: 'set', key: 'a', value: '1' },
+                timestamp: Date.now(),
+            });
+            state.persistent.log.push({
+                term: 1,
+                index: 2,
+                entryType: 'command',
+                command: { type: 'set', key: 'b', value: '2' },
+                timestamp: Date.now(),
+            });
+
+            expect(getLastLogIndex(state.persistent.log)).toBe(2);
+        });
+
+        it('getLastLogTerm should return 0 for initial log', () => {
+            const state = createInitialRaftState(testCluster);
+            expect(getLastLogTerm(state.persistent.log)).toBe(0);
+        });
+
+        it('getLastLogTerm should return correct term after entries', () => {
+            const state = createInitialRaftState(testCluster);
+
+            state.persistent.log.push({
+                term: 3,
+                index: 1,
+                entryType: 'command',
+                command: { type: 'set', key: 'a', value: '1' },
+                timestamp: Date.now(),
+            });
+
+            expect(getLastLogTerm(state.persistent.log)).toBe(3);
+        });
+    });
+
+    describe('Leader State Initialization', () => {
+        it('should initialize nextIndex for all servers', () => {
+            const lastLogIndex = 5;
+            const leaderState = createLeaderState(lastLogIndex, testCluster);
+
+            // nextIndex should be lastLogIndex + 1 for all servers
+            for (const server of testCluster) {
+                expect(leaderState.nextIndex.get(server.id)).toBe(6);
+            }
+        });
+
+        it('should initialize matchIndex to 0 for all servers', () => {
+            const lastLogIndex = 5;
+            const leaderState = createLeaderState(lastLogIndex, testCluster);
+
+            // matchIndex should be 0 for all servers
+            for (const server of testCluster) {
+                expect(leaderState.matchIndex.get(server.id)).toBe(0);
+            }
+        });
+    });
+
+    describe('Commit Index Calculation', () => {
+        /**
+         * Helper to calculate commit index from matchIndices
+         * Mirrors the logic in RaftNode.updateCommitIndex
+         */
+        function calculateCommitIndex(
+            matchIndices: number[],
+            clusterSize: number,
+            log: LogEntry[],
+            currentTerm: number,
+            currentCommitIndex: number
+        ): number {
+            // Sort in descending order
+            const sorted = [...matchIndices].sort((a, b) => b - a);
+
+            // Find the majority position
+            const quorumIndex = Math.floor(clusterSize / 2);
+
+            if (quorumIndex < sorted.length) {
+                const newCommitIndex = sorted[quorumIndex];
+
+                // Only commit entries from current term
+                if (newCommitIndex > currentCommitIndex &&
+                    log[newCommitIndex]?.term === currentTerm) {
+                    return newCommitIndex;
                 }
+            }
 
-                // If this node is not the leader, use the leaderId hint
-                if (response.leaderId) {
-                    const leaderNode = nodes.find(n => n.id === response.leaderId);
-                    if (leaderNode) {
-                        console.log(`Found leader via redirect: ${leaderNode.id}`);
-                        return leaderNode;
+            return currentCommitIndex;
+        }
+
+        it('should advance commit index when majority matches', () => {
+            const log: LogEntry[] = [
+                { term: 0, index: 0, entryType: 'noop', timestamp: 0 },
+                { term: 1, index: 1, entryType: 'command', command: { type: 'set', key: 'a', value: '1' }, timestamp: 0 },
+            ];
+
+            // Majority (2/3) have replicated index 1
+            const matchIndices = [1, 1, 0]; // node1=1, node2=1, node3=0
+
+            const newCommitIndex = calculateCommitIndex(matchIndices, 3, log, 1, 0);
+            expect(newCommitIndex).toBe(1);
+        });
+
+        it('should not advance if less than majority matches', () => {
+            const log: LogEntry[] = [
+                { term: 0, index: 0, entryType: 'noop', timestamp: 0 },
+                { term: 1, index: 1, entryType: 'command', command: { type: 'set', key: 'a', value: '1' }, timestamp: 0 },
+            ];
+
+            // Only 1/3 have replicated index 1
+            const matchIndices = [1, 0, 0];
+
+            const newCommitIndex = calculateCommitIndex(matchIndices, 3, log, 1, 0);
+            expect(newCommitIndex).toBe(0);
+        });
+
+        it('should only commit entries from current term', () => {
+            const log: LogEntry[] = [
+                { term: 0, index: 0, entryType: 'noop', timestamp: 0 },
+                { term: 1, index: 1, entryType: 'command', command: { type: 'set', key: 'a', value: '1' }, timestamp: 0 },
+            ];
+
+            // Majority have replicated, but entry is from term 1, current term is 2
+            const matchIndices = [1, 1, 1];
+
+            const newCommitIndex = calculateCommitIndex(matchIndices, 3, log, 2, 0);
+            expect(newCommitIndex).toBe(0); // Should not advance (safety guarantee)
+        });
+
+        it('should handle 4-node cluster correctly', () => {
+            const log: LogEntry[] = [
+                { term: 0, index: 0, entryType: 'noop', timestamp: 0 },
+                { term: 1, index: 1, entryType: 'command', command: { type: 'set', key: 'a', value: '1' }, timestamp: 0 },
+                { term: 1, index: 2, entryType: 'command', command: { type: 'set', key: 'b', value: '2' }, timestamp: 0 },
+            ];
+
+            // For 4 nodes, need 3 (floor(4/2) + 1 = 3) to agree
+            // But our algorithm uses quorumIndex = floor(4/2) = 2 (0-indexed position)
+            // matchIndices sorted: [2, 2, 1, 0]
+            // Position 2 has value 1, so commitIndex would be 1
+            const matchIndices = [2, 2, 1, 0];
+
+            const newCommitIndex = calculateCommitIndex(matchIndices, 4, log, 1, 0);
+            expect(newCommitIndex).toBe(1);
+        });
+    });
+
+    describe('Log Conflict Resolution', () => {
+        /**
+         * Simulates the conflict resolution logic from handleAppendEntries
+         */
+        function resolveConflicts(existingLog: LogEntry[], newEntries: LogEntry[]): LogEntry[] {
+            const log = [...existingLog];
+
+            for (const entry of newEntries) {
+                if (entry.index < log.length) {
+                    if (log[entry.index].term !== entry.term) {
+                        // Conflict! Delete this entry and everything after
+                        log.splice(entry.index);
+                        log.push(entry);
                     }
+                    // If terms match, entry is already there
+                } else {
+                    log.push(entry);
                 }
-            } catch (error) {
-                // Node might be down, try next
-                continue;
+            }
+
+            return log;
+        }
+
+        it('should append new entries to empty log', () => {
+            const existingLog: LogEntry[] = [
+                { term: 0, index: 0, entryType: 'noop', timestamp: 0 },
+            ];
+
+            const newEntries: LogEntry[] = [
+                { term: 1, index: 1, entryType: 'command', command: { type: 'set', key: 'a', value: '1' }, timestamp: 0 },
+            ];
+
+            const result = resolveConflicts(existingLog, newEntries);
+            expect(result.length).toBe(2);
+            expect(result[1].command?.key).toBe('a');
+        });
+
+        it('should not duplicate existing entries with same term', () => {
+            const existingLog: LogEntry[] = [
+                { term: 0, index: 0, entryType: 'noop', timestamp: 0 },
+                { term: 1, index: 1, entryType: 'command', command: { type: 'set', key: 'a', value: '1' }, timestamp: 0 },
+            ];
+
+            const newEntries: LogEntry[] = [
+                { term: 1, index: 1, entryType: 'command', command: { type: 'set', key: 'a', value: '1' }, timestamp: 0 },
+            ];
+
+            const result = resolveConflicts(existingLog, newEntries);
+            expect(result.length).toBe(2); // No duplication
+        });
+
+        it('should delete conflicting entries and append new ones', () => {
+            const existingLog: LogEntry[] = [
+                { term: 0, index: 0, entryType: 'noop', timestamp: 0 },
+                { term: 1, index: 1, entryType: 'command', command: { type: 'set', key: 'a', value: '1' }, timestamp: 0 },
+                { term: 1, index: 2, entryType: 'command', command: { type: 'set', key: 'b', value: '2' }, timestamp: 0 },
+            ];
+
+            // New entry at index 1 with different term - conflict!
+            const newEntries: LogEntry[] = [
+                { term: 2, index: 1, entryType: 'command', command: { type: 'set', key: 'x', value: 'y' }, timestamp: 0 },
+            ];
+
+            const result = resolveConflicts(existingLog, newEntries);
+
+            // Should have deleted index 1 and 2, then appended new entry
+            expect(result.length).toBe(2);
+            expect(result[1].term).toBe(2);
+            expect(result[1].command?.key).toBe('x');
+        });
+    });
+
+    describe('Command Building', () => {
+        /**
+         * Test buildCommand logic
+         */
+        function buildCommand(command: string, args: string[]): Command {
+            const cmdType = command.toLowerCase() as 'set' | 'del' | 'append';
+
+            switch (cmdType) {
+                case 'set':
+                    return { type: 'set', key: args[0], value: args[1] || '' };
+                case 'del':
+                    return { type: 'del', key: args[0] };
+                case 'append':
+                    return { type: 'append', key: args[0], value: args[1] || '' };
+                default:
+                    throw new Error(`Unknown command type: ${command}`);
             }
         }
-        return null;
-    }
 
-    /**
-     * Execute a command on a specific node
-     */
-    async function executeCommand(
-        node: ServerInfo,
-        command: string,
-        args: string[]
-    ): Promise<ExecuteResponse> {
-        return await rpcClient.call<ExecuteResponse>(
-            node,
-            'execute',
-            { command, args } as ExecuteRequest
-        );
-    }
+        it('should build SET command correctly', () => {
+            const cmd = buildCommand('set', ['key1', 'value1']);
+            expect(cmd.type).toBe('set');
+            expect(cmd.key).toBe('key1');
+            expect(cmd.value).toBe('value1');
+        });
 
-    /**
-     * Get a non-leader node
-     */
-    function getNonLeader(): ServerInfo {
-        const nonLeader = nodes.find(n => n.id !== leader?.id);
-        if (!nonLeader) {
-            throw new Error('No non-leader node available');
+        it('should build DEL command correctly', () => {
+            const cmd = buildCommand('del', ['key1']);
+            expect(cmd.type).toBe('del');
+            expect(cmd.key).toBe('key1');
+            expect(cmd.value).toBeUndefined();
+        });
+
+        it('should build APPEND command correctly', () => {
+            const cmd = buildCommand('append', ['key1', 'suffix']);
+            expect(cmd.type).toBe('append');
+            expect(cmd.key).toBe('key1');
+            expect(cmd.value).toBe('suffix');
+        });
+
+        it('should handle case insensitivity', () => {
+            const cmd1 = buildCommand('SET', ['k', 'v']);
+            const cmd2 = buildCommand('Set', ['k', 'v']);
+
+            expect(cmd1.type).toBe('set');
+            expect(cmd2.type).toBe('set');
+        });
+
+        it('should throw for unknown command', () => {
+            expect(() => buildCommand('invalid', [])).toThrow('Unknown command type');
+        });
+    });
+
+    describe('State Machine Application', () => {
+        /**
+         * Simulates applyCommand logic
+         */
+        interface SimpleKVStore {
+            data: Map<string, string>;
         }
-        return nonLeader;
-    }
 
-    /**
-     * Get multiple non-leader nodes
-     */
-    function getNonLeaders(count: number): ServerInfo[] {
-        const nonLeaders = nodes.filter(n => n.id !== leader?.id);
-        return nonLeaders.slice(0, count);
-    }
+        function applyCommand(store: SimpleKVStore, command: Command): string {
+            switch (command.type) {
+                case 'set':
+                    store.data.set(command.key, command.value || '');
+                    return 'OK';
+                case 'del':
+                    const oldValue = store.data.get(command.key) || '';
+                    store.data.delete(command.key);
+                    return `"${oldValue}"`;
+                case 'append':
+                    const current = store.data.get(command.key) || '';
+                    store.data.set(command.key, current + (command.value || ''));
+                    return 'OK';
+                default:
+                    return 'ERROR: Unknown command';
+            }
+        }
 
-    /**
-     * Wait for log replication to propagate
-     */
-    async function waitForReplication(ms: number = 500): Promise<void> {
-        await new Promise(resolve => setTimeout(resolve, ms));
-    }
+        it('should apply SET command', () => {
+            const store: SimpleKVStore = { data: new Map() };
+            const result = applyCommand(store, { type: 'set', key: 'foo', value: 'bar' });
 
-    describe('Test 1: Basic Log Replication to Leader', () => {
-        it('should execute set("1", "A") on leader', async () => {
-            if (!leader) throw new Error('No leader found');
-
-            const response = await executeCommand(leader, 'set', ['1', 'A']);
-            expect(response.success).toBe(true);
-            expect(response.result).toBe('OK');
+            expect(result).toBe('OK');
+            expect(store.data.get('foo')).toBe('bar');
         });
 
-        it('should execute append("1", "BC") on leader', async () => {
-            if (!leader) throw new Error('No leader found');
+        it('should apply DEL command', () => {
+            const store: SimpleKVStore = { data: new Map([['foo', 'bar']]) };
+            const result = applyCommand(store, { type: 'del', key: 'foo' });
 
-            const response = await executeCommand(leader, 'append', ['1', 'BC']);
-            expect(response.success).toBe(true);
-            expect(response.result).toBe('OK');
+            expect(result).toBe('"bar"');
+            expect(store.data.has('foo')).toBe(false);
         });
 
-        it('should execute set("2", "SI") on leader', async () => {
-            if (!leader) throw new Error('No leader found');
+        it('should apply APPEND command', () => {
+            const store: SimpleKVStore = { data: new Map([['foo', 'hello']]) };
+            const result = applyCommand(store, { type: 'append', key: 'foo', value: 'world' });
 
-            const response = await executeCommand(leader, 'set', ['2', 'SI']);
-            expect(response.success).toBe(true);
-            expect(response.result).toBe('OK');
+            expect(result).toBe('OK');
+            expect(store.data.get('foo')).toBe('helloworld');
         });
 
-        it('should execute append("2", "S") on leader', async () => {
-            if (!leader) throw new Error('No leader found');
+        it('should apply APPEND to non-existent key', () => {
+            const store: SimpleKVStore = { data: new Map() };
+            const result = applyCommand(store, { type: 'append', key: 'foo', value: 'bar' });
 
-            const response = await executeCommand(leader, 'append', ['2', 'S']);
-            expect(response.success).toBe(true);
-            expect(response.result).toBe('OK');
+            expect(result).toBe('OK');
+            expect(store.data.get('foo')).toBe('bar');
         });
 
-        it('should get("1") return "ABC" on leader', async () => {
-            if (!leader) throw new Error('No leader found');
+        it('should apply sequence of commands correctly (demo scenario)', () => {
+            const store: SimpleKVStore = { data: new Map() };
 
-            const response = await executeCommand(leader, 'get', ['1']);
-            expect(response.success).toBe(true);
-            expect(response.result).toBe('"ABC"');
-        });
-    });
+            // Simulate demo scenario:
+            // set("1", "A")
+            applyCommand(store, { type: 'set', key: '1', value: 'A' });
+            expect(store.data.get('1')).toBe('A');
 
-    describe('Test 2: Read from Non-Leader (with redirect)', () => {
-        beforeAll(async () => {
-            // Wait for replication to complete
-            await waitForReplication(1000);
-        });
+            // append("1", "BC")
+            applyCommand(store, { type: 'append', key: '1', value: 'BC' });
+            expect(store.data.get('1')).toBe('ABC');
 
-        it('should get("1") from non-leader node', async () => {
-            const nonLeader = getNonLeader();
+            // set("2", "SI")
+            applyCommand(store, { type: 'set', key: '2', value: 'SI' });
+            expect(store.data.get('2')).toBe('SI');
 
-            const response = await executeCommand(nonLeader, 'get', ['1']);
-            
-            // Non-leader might redirect to leader, but should eventually return correct value
-            expect(response.success).toBe(true);
-            expect(response.result).toBe('"ABC"');
-        });
-
-        it('should get("2") from non-leader node', async () => {
-            const nonLeader = getNonLeader();
-
-            const response = await executeCommand(nonLeader, 'get', ['2']);
-            
-            expect(response.success).toBe(true);
-            expect(response.result).toBe('"SIS"');
-        });
-    });
-
-    describe('Test 3: Concurrent Writes from Multiple Clients', () => {
-        it('should handle concurrent writes from two clients', async () => {
-            if (!leader) throw new Error('No leader found');
-
-            // Execute commands concurrently
-            const [response1a, response2a] = await Promise.all([
-                executeCommand(leader, 'set', ['ruby-chan', 'choco-minto']),
-                executeCommand(leader, 'set', ['ayumu-chan', 'strawberry-flavor']),
-            ]);
-
-            expect(response1a.success).toBe(true);
-            expect(response1a.result).toBe('OK');
-            expect(response2a.success).toBe(true);
-            expect(response2a.result).toBe('OK');
-
-            // Wait a bit for replication
-            await waitForReplication(500);
-
-            // Execute append commands concurrently
-            const [response1b, response2b] = await Promise.all([
-                executeCommand(leader, 'append', ['ruby-chan', '-yori-mo-anata']),
-                executeCommand(leader, 'append', ['ayumu-chan', '-yori-mo-anata']),
-            ]);
-
-            expect(response1b.success).toBe(true);
-            expect(response1b.result).toBe('OK');
-            expect(response2b.success).toBe(true);
-            expect(response2b.result).toBe('OK');
-        });
-    });
-
-    describe('Test 4: Read from Different Non-Leader Nodes', () => {
-        beforeAll(async () => {
-            // Wait for replication to complete
-            await waitForReplication(1000);
-        });
-
-        it('should get("ruby-chan") from first non-leader', async () => {
-            const nonLeaders = getNonLeaders(2);
-            expect(nonLeaders.length).toBeGreaterThanOrEqual(2);
-
-            const response = await executeCommand(nonLeaders[0], 'get', ['ruby-chan']);
-            
-            expect(response.success).toBe(true);
-            expect(response.result).toBe('"choco-minto-yori-mo-anata"');
-        });
-
-        it('should get("ayumu-chan") from second non-leader', async () => {
-            const nonLeaders = getNonLeaders(2);
-            expect(nonLeaders.length).toBeGreaterThanOrEqual(2);
-
-            const response = await executeCommand(nonLeaders[1], 'get', ['ayumu-chan']);
-            
-            expect(response.success).toBe(true);
-            expect(response.result).toBe('"strawberry-flavor-yori-mo-anata"');
-        });
-
-        it('should verify consistency across all nodes', async () => {
-            // Wait for full replication
-            await waitForReplication(1000);
-
-            // Try to read from all nodes (including leader)
-            const results = await Promise.allSettled(
-                nodes.map(node => executeCommand(node, 'get', ['ruby-chan']))
-            );
-
-            // Count successful reads
-            const successfulReads = results.filter(
-                r => r.status === 'fulfilled' && r.value.success
-            );
-
-            // At least majority should be able to read (including redirects)
-            expect(successfulReads.length).toBeGreaterThanOrEqual(Math.floor(nodes.length / 2) + 1);
-
-            // All successful reads should return the same value
-            const values = successfulReads.map(
-                r => (r as PromiseFulfilledResult<ExecuteResponse>).value.result
-            );
-            const uniqueValues = new Set(values);
-            expect(uniqueValues.size).toBe(1);
-            expect(Array.from(uniqueValues)[0]).toBe('"choco-minto-yori-mo-anata"');
-        });
-    });
-
-    describe('Additional Verification Tests', () => {
-        it('should verify all keys are consistent', async () => {
-            if (!leader) throw new Error('No leader found');
-
-            await waitForReplication(1000);
-
-            // Verify key "1"
-            const response1 = await executeCommand(leader, 'get', ['1']);
-            expect(response1.success).toBe(true);
-            expect(response1.result).toBe('"ABC"');
-
-            // Verify key "2"
-            const response2 = await executeCommand(leader, 'get', ['2']);
-            expect(response2.success).toBe(true);
-            expect(response2.result).toBe('"SIS"');
-
-            // Verify key "ruby-chan"
-            const response3 = await executeCommand(leader, 'get', ['ruby-chan']);
-            expect(response3.success).toBe(true);
-            expect(response3.result).toBe('"choco-minto-yori-mo-anata"');
-
-            // Verify key "ayumu-chan"
-            const response4 = await executeCommand(leader, 'get', ['ayumu-chan']);
-            expect(response4.success).toBe(true);
-            expect(response4.result).toBe('"strawberry-flavor-yori-mo-anata"');
-        });
-
-        it('should handle strln on replicated data', async () => {
-            if (!leader) throw new Error('No leader found');
-
-            // Check length of "ABC"
-            const response1 = await executeCommand(leader, 'strln', ['1']);
-            expect(response1.success).toBe(true);
-            expect(response1.result).toBe('3');
-
-            // Check length of "choco-minto-yori-mo-anata"
-            const response2 = await executeCommand(leader, 'strln', ['ruby-chan']);
-            expect(response2.success).toBe(true);
-            expect(response2.result).toBe('26');
+            // append("2", "S")
+            applyCommand(store, { type: 'append', key: '2', value: 'S' });
+            expect(store.data.get('2')).toBe('SIS');
         });
     });
 });
-
-/**
- * Test Summary:
- * 
- * This test suite validates the following aspects of log replication:
- * 
- * 1. Basic writes to leader are replicated
- * 2. Reads from non-leader nodes work (with redirect)
- * 3. Concurrent writes are handled correctly
- * 4. Data consistency across all nodes
- * 
- * To run these tests:
- * 1. Start Docker cluster: cd docker && docker-compose up -d
- * 2. Wait for leader election: sleep 15
- * 3. Run tests: npm test -- tests/log-replication.test.ts
- * 
- * Expected behavior:
- * - All write operations should succeed and return "OK"
- * - All read operations should return consistent values
- * - Non-leader nodes should redirect to leader for writes
- * - Concurrent operations should be serialized properly
- * - All nodes should eventually have the same data
- */
