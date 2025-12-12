@@ -39,7 +39,7 @@ import {
 } from '../rpc/types';
 import { KeyValueStore, executeKvCommand } from '../store/kv-store';
 import { Logger } from '../utils/logger';
-import { CommandType } from './types';
+
 const logger = new Logger('RaftNode');
 
 /**
@@ -63,6 +63,23 @@ export class RaftNode extends EventEmitter implements IRaftNode {
     // Timers (Person 2 will manage these)
     private electionTimer: NodeJS.Timeout | null = null;
     private heartbeatTimer: NodeJS.Timeout | null = null;
+
+    // ============================================================================
+    // Log Replication (Person 3)
+    // ============================================================================
+
+    /** Timeout for waiting for command commit (ms) */
+    private static readonly COMMAND_TIMEOUT = 10000;
+
+    /**
+     * Pending commands waiting for commit
+     * Maps log index to promise resolvers and command details
+     */
+    private pendingCommands: Map<number, {
+        resolve: (result: string) => void;
+        reject: (error: Error) => void;
+        command: Command;
+    }> = new Map();
 
     constructor(config: RaftConfig) {
         super();
@@ -416,20 +433,235 @@ export class RaftNode extends EventEmitter implements IRaftNode {
     }
 
     // ============================================================================
-    // Heartbeat (Person 2 - TODO: Enhanced implementation)
+    // Heartbeat (Person 3 Enhanced)
     // ============================================================================
 
     /**
-     * Send heartbeat to all followers
+     * Send heartbeat to all followers (Person 3 Enhanced)
      * 
-     * Also handles log replication by sending pending entries
+     * Now uses the replicateToAllFollowers method which sends
+     * actual log entries along with heartbeat. This serves dual purpose:
+     * 1. Maintains leader authority (heartbeat)
+     * 2. Replicates any pending log entries
      */
     sendHeartbeat(): void {
         if (this.state.nodeState !== NodeState.LEADER) {
             return;
         }
 
-        logger.debug('Sending heartbeat to followers');
+        logger.debug('Sending heartbeat/replication to followers');
+
+        // Use the replication method which includes log entries
+        this.replicateToAllFollowers();
+    }
+
+    // ============================================================================
+    // Log Replication - Follower Side (Person 3)
+    // ============================================================================
+
+    /**
+     * Handle incoming AppendEntries RPC (Person 3 - Full Implementation)
+     * 
+     * This method handles both heartbeats and log replication:
+     * 1. Validates term and recognizes leader
+     * 2. Checks log consistency at prevLogIndex
+     * 3. Appends new entries (handling conflicts)
+     * 4. Updates commit index and applies entries to state machine
+     * 
+     * @param request - AppendEntries request from leader
+     * @returns AppendEntries response
+     */
+    async handleAppendEntries(request: AppendEntriesRequest): Promise<AppendEntriesResponse> {
+        const currentTerm = this.state.persistent.currentTerm;
+
+        // Step 1: Reply false if term < currentTerm (§5.1)
+        if (request.term < currentTerm) {
+            logger.debug(`Rejecting AppendEntries: term ${request.term} < currentTerm ${currentTerm}`);
+            return { term: currentTerm, success: false };
+        }
+
+        // Step 2: Update term and convert to follower if needed
+        if (request.term > currentTerm) {
+            this.updateTerm(request.term);
+        }
+
+        // Recognize the leader
+        if (this.state.nodeState !== NodeState.FOLLOWER) {
+            this.transitionTo(NodeState.FOLLOWER, `received AppendEntries from leader ${request.leaderId}`);
+        }
+        this.state.leaderId = request.leaderId;
+
+        // Reset election timer (valid heartbeat received)
+        this.resetElectionTimer();
+
+        const log = this.state.persistent.log;
+
+        // Step 3: Reply false if log doesn't contain entry at prevLogIndex with prevLogTerm (§5.3)
+        if (request.prevLogIndex > 0) {
+            if (request.prevLogIndex >= log.length) {
+                // Log is too short
+                logger.debug(`Log consistency check failed: prevLogIndex=${request.prevLogIndex} >= log.length=${log.length}`);
+                return { term: this.state.persistent.currentTerm, success: false };
+            }
+            if (log[request.prevLogIndex].term !== request.prevLogTerm) {
+                // Term mismatch at prevLogIndex
+                logger.debug(`Log consistency check failed: log[${request.prevLogIndex}].term=${log[request.prevLogIndex].term} !== prevLogTerm=${request.prevLogTerm}`);
+                return { term: this.state.persistent.currentTerm, success: false };
+            }
+        }
+
+        // Step 4: If existing entry conflicts with new one, delete it and all following (§5.3)
+        // Step 5: Append any new entries not already in the log
+        if (request.entries.length > 0) {
+            for (const entry of request.entries) {
+                if (entry.index < log.length) {
+                    // Entry exists at this index
+                    if (log[entry.index].term !== entry.term) {
+                        // Conflict! Delete this entry and everything after
+                        logger.info(`Conflict at index ${entry.index}: deleting entries from ${entry.index} onwards`);
+                        log.splice(entry.index);
+                        log.push(entry);
+                    }
+                    // If terms match, entry is already there (idempotent)
+                } else {
+                    // New entry, append it
+                    log.push(entry);
+                    logger.debug(`Appended entry at index ${entry.index}`);
+                }
+            }
+        }
+
+        // Step 6: If leaderCommit > commitIndex, update commitIndex (§5.3)
+        if (request.leaderCommit > this.state.volatile.commitIndex) {
+            const oldCommitIndex = this.state.volatile.commitIndex;
+            this.state.volatile.commitIndex = Math.min(
+                request.leaderCommit,
+                getLastLogIndex(log)
+            );
+
+            if (this.state.volatile.commitIndex > oldCommitIndex) {
+                logger.info(`Updated commitIndex from ${oldCommitIndex} to ${this.state.volatile.commitIndex}`);
+
+                // Apply committed entries to state machine
+                this.applyCommittedEntries();
+            }
+        }
+
+        return {
+            term: this.state.persistent.currentTerm,
+            success: true,
+            matchIndex: getLastLogIndex(log)
+        };
+    }
+
+    /**
+     * Execute a client command (Person 3 - Full Implementation)
+     * 
+     * For write commands, this method:
+     * 1. Creates a log entry with the command
+     * 2. Appends to local log
+     * 3. Triggers replication to followers
+     * 4. Waits for majority acknowledgment (commit)
+     * 5. Applies to state machine and returns result
+     * 
+     * @param command - Command to execute (set, get, append, del, etc.)
+     * @param args - Command arguments
+     * @returns Command result
+     */
+    async executeCommand(command: string, args: string[]): Promise<string> {
+        // Special case: ping doesn't need log replication
+        if (command === 'ping') {
+            return 'PONG';
+        }
+
+        // Read-only commands can be executed immediately from state machine
+        // These read from the committed state, so they're always consistent
+        if (command === 'get' || command === 'strln') {
+            return executeKvCommand(this.kvStore, command, args);
+        }
+
+        // Write commands need to go through log replication
+        // Build the Command object based on command type
+        const cmd: Command = this.buildCommand(command, args);
+
+        // Create log entry
+        const entry: LogEntry = {
+            term: this.state.persistent.currentTerm,
+            index: getLastLogIndex(this.state.persistent.log) + 1,
+            entryType: 'command',
+            command: cmd,
+            timestamp: Date.now(),
+        };
+
+        // Append to local log
+        this.state.persistent.log.push(entry);
+        logger.info(`Appended command entry at index ${entry.index}: ${command} ${args.join(' ')}`);
+
+        // Update our own matchIndex (leader always matches itself)
+        if (this.state.leaderState) {
+            this.state.leaderState.matchIndex.set(this.config.nodeId, entry.index);
+        }
+
+        // Create a promise that will be resolved when the entry is committed
+        return new Promise<string>((resolve, reject) => {
+            // Store the pending command
+            this.pendingCommands.set(entry.index, {
+                resolve,
+                reject,
+                command: cmd,
+            });
+
+            // Set timeout for command
+            const timeoutId = setTimeout(() => {
+                if (this.pendingCommands.has(entry.index)) {
+                    this.pendingCommands.delete(entry.index);
+                    reject(new Error('Command timed out waiting for commit'));
+                }
+            }, RaftNode.COMMAND_TIMEOUT);
+
+            // Store timeout ID for cleanup
+            const pending = this.pendingCommands.get(entry.index);
+            if (pending) {
+                (pending as any).timeoutId = timeoutId;
+            }
+
+            // Trigger immediate replication to all followers
+            this.replicateToAllFollowers();
+        });
+    }
+
+    /**
+     * Build a Command object from command string and args
+     * 
+     * @param command - Command type (set, del, append)
+     * @param args - Command arguments
+     * @returns Command object
+     */
+    private buildCommand(command: string, args: string[]): Command {
+        const cmdType = command.toLowerCase() as 'set' | 'del' | 'append';
+
+        switch (cmdType) {
+            case 'set':
+                return { type: 'set', key: args[0], value: args[1] || '' };
+            case 'del':
+                return { type: 'del', key: args[0] };
+            case 'append':
+                return { type: 'append', key: args[0], value: args[1] || '' };
+            default:
+                throw new Error(`Unknown command type: ${command}`);
+        }
+    }
+
+    /**
+     * Replicate log entries to all followers (Person 3)
+     * 
+     * Called after a new entry is appended or periodically during heartbeat.
+     * Sends AppendEntries to each follower with entries they're missing.
+     */
+    private replicateToAllFollowers(): void {
+        if (this.state.nodeState !== NodeState.LEADER) {
+            return;
+        }
 
         const otherNodes = this.state.clusterConfig.filter(s => s.id !== this.config.nodeId);
 
@@ -439,16 +671,21 @@ export class RaftNode extends EventEmitter implements IRaftNode {
     }
 
     /**
-     * Replicate log entries to a specific follower
+     * Replicate log entries to a single follower (Person 3)
      * 
-     * @param follower - Follower node info
+     * Sends AppendEntries RPC with entries from nextIndex onwards.
+     * On success: updates matchIndex and checks for commit.
+     * On failure: decrements nextIndex and retries.
+     * 
+     * @param node - Follower to replicate to
      */
-    private async replicateToFollower(follower: ServerInfo): Promise<void> {
-        if (this.state.nodeState !== NodeState.LEADER || !this.state.leaderState) {
+    private replicateToFollower(node: ServerInfo): void {
+        if (!this.state.leaderState) {
             return;
         }
 
-        const nextIndex = this.state.leaderState.nextIndex.get(follower.id) || 1;
+        // Get the next index for this follower
+        const nextIndex = this.state.leaderState.nextIndex.get(node.id) || 1;
         const prevLogIndex = nextIndex - 1;
         const prevLogTerm = this.state.persistent.log[prevLogIndex]?.term || 0;
 
@@ -464,323 +701,303 @@ export class RaftNode extends EventEmitter implements IRaftNode {
             leaderCommit: this.state.volatile.commitIndex,
         };
 
+        // Log only if sending actual entries (not just heartbeat)
         if (entries.length > 0) {
-            logger.info(`[LEADER] Sending ${entries.length} entries to ${follower.id} (nextIndex=${nextIndex}, commitIndex=${this.state.volatile.commitIndex})`);
+            logger.debug(`Replicating ${entries.length} entries to ${node.id} (prevLogIndex=${prevLogIndex})`);
         }
 
-        try {
-            const response = await this.rpcClient.call<AppendEntriesResponse>(follower, 'append_entries', request);
-
-            // Update term if we're behind
-            if (response.term > this.state.persistent.currentTerm) {
-                this.updateTerm(response.term);
-                return;
-            }
-
-            // If successful, update nextIndex and matchIndex
-            if (response.success) {
-                if (entries.length > 0) {
-                    const lastIndex = entries[entries.length - 1].index;
-                    this.state.leaderState.nextIndex.set(follower.id, lastIndex + 1);
-                    this.state.leaderState.matchIndex.set(follower.id, lastIndex);
-                    logger.info(`[LEADER] ✓ Successfully replicated to ${follower.id} up to index ${lastIndex}`);
+        this.rpcClient.call<AppendEntriesResponse>(node, 'append_entries', request)
+            .then(response => {
+                // Check for higher term
+                if (response.term > this.state.persistent.currentTerm) {
+                    this.updateTerm(response.term);
+                    return;
                 }
 
-                // Try to commit entries
-                this.tryCommitEntries();
-            } else {
-                // If failed due to log inconsistency, decrement nextIndex and retry
-                const currentNext = this.state.leaderState.nextIndex.get(follower.id) || 1;
-                this.state.leaderState.nextIndex.set(follower.id, Math.max(1, currentNext - 1));
-                logger.warn(`[LEADER] ✗ Log inconsistency with ${follower.id}, decremented nextIndex to ${Math.max(1, currentNext - 1)}`);
-            }
-        } catch (err: any) {
-            logger.debug(`Replication to ${follower.id} failed: ${err.message}`);
-        }
+                if (!this.state.leaderState) {
+                    return; // No longer leader
+                }
+
+                if (response.success) {
+                    // Update nextIndex and matchIndex for this follower
+                    const newMatchIndex = response.matchIndex || (prevLogIndex + entries.length);
+                    this.state.leaderState.matchIndex.set(node.id, newMatchIndex);
+                    this.state.leaderState.nextIndex.set(node.id, newMatchIndex + 1);
+
+                    if (entries.length > 0) {
+                        logger.debug(`Replication to ${node.id} succeeded, matchIndex=${newMatchIndex}`);
+                    }
+
+                    // Check if we can advance the commit index
+                    this.updateCommitIndex();
+                } else {
+                    // Decrement nextIndex and retry
+                    const newNextIndex = Math.max(1, nextIndex - 1);
+                    this.state.leaderState.nextIndex.set(node.id, newNextIndex);
+                    logger.debug(`Replication to ${node.id} failed, retrying with nextIndex=${newNextIndex}`);
+
+                    // Retry replication immediately
+                    setTimeout(() => this.replicateToFollower(node), 10);
+                }
+            })
+            .catch(err => {
+                logger.debug(`Replication to ${node.id} failed: ${err.message}`);
+            });
     }
 
     /**
-     * Try to commit log entries based on majority replication
+     * Update the commit index based on majority matchIndex (Person 3)
+     * 
+     * Finds the highest N such that a majority of matchIndex[i] >= N
+     * and log[N].term == currentTerm. Then advances commitIndex to N.
      */
-    private tryCommitEntries(): void {
-        if (this.state.nodeState !== NodeState.LEADER || !this.state.leaderState) {
+    private updateCommitIndex(): void {
+        if (!this.state.leaderState) {
             return;
         }
 
-        const lastLogIndex = getLastLogIndex(this.state.persistent.log);
-
-        // Find the highest index N where:
-        // - N > commitIndex
-        // - A majority of matchIndex[i] >= N
-        // - log[N].term == currentTerm
-        for (let n = lastLogIndex; n > this.state.volatile.commitIndex; n--) {
-            const entry = this.state.persistent.log[n];
-            if (!entry || entry.term !== this.state.persistent.currentTerm) {
-                continue;
-            }
-
-            // Count how many nodes have replicated this entry
-            let replicaCount = 1; // Count self
-            for (const matchIndex of this.state.leaderState.matchIndex.values()) {
-                if (matchIndex >= n) {
-                    replicaCount++;
-                }
-            }
-
-            // Check if we have majority
-            const quorumSize = this.getQuorumSize();
-            if (replicaCount >= quorumSize) {
-                logger.info(`Committing entries up to index ${n} (replicated on ${replicaCount}/${this.state.clusterConfig.length} nodes)`);
-                this.commitLogEntries(n);
-                break;
-            }
-        }
-    }
-
-    /**
-     * Commit log entries up to the given index
-     * Only updates commitIndex, actual application happens in applyCommittedEntries
-     * 
-     * @param commitIndex - Index to commit up to
-     */
-    private commitLogEntries(commitIndex: number): void {
-        const oldCommitIndex = this.state.volatile.commitIndex;
-        this.state.volatile.commitIndex = commitIndex;
-        logger.info(`Leader committed entries up to index ${commitIndex} (was ${oldCommitIndex})`);
-
-        // Trigger application of committed entries
-        this.applyCommittedEntries(commitIndex);
-    }
-
-    // ============================================================================
-    // Log Replication (Person 3 - TODO: Full implementation)
-    // ============================================================================
-
-    /**
-     * Handle incoming AppendEntries RPC
-     * 
-     * TODO for Person 3: Full log replication implementation
-     * 
-     * @param request - AppendEntries request
-     * @returns AppendEntries response
-     */
-    async handleAppendEntries(request: AppendEntriesRequest): Promise<AppendEntriesResponse> {
-        // Basic implementation - Person 3 will enhance
-
+        const log = this.state.persistent.log;
         const currentTerm = this.state.persistent.currentTerm;
 
-        // Reply false if term < currentTerm
-        if (request.term < currentTerm) {
-            return { term: currentTerm, success: false };
-        }
-
-        // Update term and convert to follower if needed
-        if (request.term > currentTerm) {
-            this.updateTerm(request.term);
-        }
-
-        // Recognize leader
-        if (this.state.nodeState !== NodeState.FOLLOWER) {
-            this.transitionTo(NodeState.FOLLOWER, `received AppendEntries from leader ${request.leaderId}`);
-        }
-        this.state.leaderId = request.leaderId;
-
-        // Reset election timer (valid heartbeat received)
-        this.resetElectionTimer();
-
-        // Heartbeat with no entries
-        if (request.entries.length === 0) {
-            logger.debug(`[FOLLOWER] Received heartbeat from ${request.leaderId} (leaderCommit=${request.leaderCommit})`);
-            // Still need to update commit index and apply entries
-            if (request.leaderCommit > this.state.volatile.commitIndex) {
-                const newCommitIndex = Math.min(
-                    request.leaderCommit,
-                    getLastLogIndex(this.state.persistent.log)
-                );
-                this.applyCommittedEntries(newCommitIndex);
-            }
-            return { term: this.state.persistent.currentTerm, success: true };
-        }
-
-        logger.info(`[FOLLOWER] Received ${request.entries.length} entries from ${request.leaderId} (prevIndex=${request.prevLogIndex}, prevTerm=${request.prevLogTerm})`);
-
-        // Log replication - check if log contains entry at prevLogIndex with prevLogTerm
-        const log = this.state.persistent.log;
-        if (request.prevLogIndex > 0) {
-            // Check if we have the previous entry
-            if (log.length <= request.prevLogIndex) {
-                logger.debug(`Log too short: have ${log.length}, need ${request.prevLogIndex + 1}`);
-                return { term: this.state.persistent.currentTerm, success: false };
-            }
-            // Check if term matches
-            if (log[request.prevLogIndex].term !== request.prevLogTerm) {
-                logger.debug(`Term mismatch at index ${request.prevLogIndex}: have ${log[request.prevLogIndex].term}, need ${request.prevLogTerm}`);
-                return { term: this.state.persistent.currentTerm, success: false };
+        // Collect all matchIndex values (including leader's own)
+        const matchIndices: number[] = [];
+        for (const [serverId, matchIndex] of this.state.leaderState.matchIndex) {
+            // Only count servers still in the cluster
+            if (this.state.clusterConfig.find(s => s.id === serverId)) {
+                matchIndices.push(matchIndex);
             }
         }
 
-        // Append new entries
-        let appendedCount = 0;
-        for (const entry of request.entries) {
-            if (entry.index < log.length) {
-                // Check for conflict
-                if (log[entry.index].term !== entry.term) {
-                    // Delete conflicting entry and all that follow
-                    logger.warn(`[FOLLOWER] Conflict at index ${entry.index}, truncating log from ${entry.index}`);
-                    log.splice(entry.index);
-                    log.push(entry);
-                    appendedCount++;
-                }
-                // Entry already exists and matches, skip
-            } else {
-                // Append new entry
-                log.push(entry);
-                appendedCount++;
+        // Sort in descending order
+        matchIndices.sort((a, b) => b - a);
+
+        // Find the majority position (quorum - 1 because 0-indexed)
+        const quorumIndex = Math.floor(this.state.clusterConfig.length / 2);
+
+        // The commit index is the matchIndex at the quorum position
+        // This is the highest index replicated to a majority
+        if (quorumIndex < matchIndices.length) {
+            const newCommitIndex = matchIndices[quorumIndex];
+
+            // Only commit entries from current term (Raft safety guarantee)
+            // This prevents committing entries from previous terms without
+            // a new entry in the current term
+            if (newCommitIndex > this.state.volatile.commitIndex &&
+                log[newCommitIndex]?.term === currentTerm) {
+
+                logger.info(`Advancing commitIndex from ${this.state.volatile.commitIndex} to ${newCommitIndex}`);
+                this.state.volatile.commitIndex = newCommitIndex;
+
+                // Apply newly committed entries to state machine
+                this.applyCommittedEntries();
             }
         }
-
-        if (appendedCount > 0) {
-            logger.info(`[FOLLOWER] ✓ Appended ${appendedCount} new entries, log size now ${log.length}`);
-        }
-
-        // Update commit index and apply entries
-        if (request.leaderCommit > this.state.volatile.commitIndex) {
-            const newCommitIndex = Math.min(
-                request.leaderCommit,
-                getLastLogIndex(log)
-            );
-            this.applyCommittedEntries(newCommitIndex);
-        }
-
-        return {
-            term: this.state.persistent.currentTerm,
-            success: true,
-            matchIndex: getLastLogIndex(log)
-        };
     }
 
     /**
-     * Apply committed entries to the state machine
+     * Apply committed entries to the state machine (Person 3)
      * 
-     * @param commitIndex - Index to commit up to
+     * Applies all entries from lastApplied+1 to commitIndex.
+     * For command entries: executes on KV store.
+     * For config entries: updates cluster configuration.
+     * Resolves pending command promises with results.
      */
-    private applyCommittedEntries(commitIndex: number): void {
-        for (let i = this.state.volatile.lastApplied + 1; i <= commitIndex; i++) {
-            const entry = this.state.persistent.log[i];
-            if (entry.entryType === 'command' && entry.command) {
-                // ✅ Eksekusi di sini - BENAR
-                const args = entry.command.value !== undefined 
-                    ? [entry.command.key, entry.command.value] 
-                    : [entry.command.key];
-                const result = executeKvCommand(this.kvStore, entry.command.type, args);
-                logger.info(`Applied command at index ${i}: ${entry.command.type} ${entry.command.key}`);
+    private applyCommittedEntries(): void {
+        const log = this.state.persistent.log;
+
+        while (this.state.volatile.lastApplied < this.state.volatile.commitIndex) {
+            const indexToApply = this.state.volatile.lastApplied + 1;
+            const entry = log[indexToApply];
+
+            if (!entry) {
+                logger.error(`No entry at index ${indexToApply} to apply`);
+                break;
             }
-            this.state.volatile.lastApplied = i;
+
+            logger.info(`Applying entry at index ${indexToApply}: type=${entry.entryType}`);
+
+            let result: string = '';
+
+            if (entry.entryType === 'command' && entry.command) {
+                // Apply command to KV store
+                result = this.applyCommand(entry.command);
+                logger.debug(`Applied command: ${entry.command.type} ${entry.command.key} -> ${result}`);
+            } else if (entry.entryType === 'config' && entry.configChange) {
+                // Apply configuration change
+                this.applyConfigChange(entry.configChange);
+                result = 'OK';
+            }
+            // 'noop' entries don't need any action
+
+            // Update lastApplied
+            this.state.volatile.lastApplied = indexToApply;
+
+            // Resolve pending command if this is the leader
+            const pending = this.pendingCommands.get(indexToApply);
+            if (pending) {
+                // Clear timeout
+                if ((pending as any).timeoutId) {
+                    clearTimeout((pending as any).timeoutId);
+                }
+                pending.resolve(result);
+                this.pendingCommands.delete(indexToApply);
+            }
         }
     }
 
     /**
-     * Apply a configuration change to the cluster
+     * Apply a command to the KV store (Person 3)
+     * 
+     * @param command - Command to apply
+     * @returns Result of the command
+     */
+    private applyCommand(command: Command): string {
+        switch (command.type) {
+            case 'set':
+                this.kvStore.set(command.key, command.value || '');
+                return 'OK';
+            case 'del':
+                return `"${this.kvStore.del(command.key)}"`;
+            case 'append':
+                this.kvStore.append(command.key, command.value || '');
+                return 'OK';
+            default:
+                return 'ERROR: Unknown command';
+        }
+    }
+
+    /**
+     * Apply a configuration change (Person 3)
+     * 
+     * This is called when a config entry is committed (by both leaders and followers).
+     * If the change removes THIS node, we should shut down.
      * 
      * @param configChange - Configuration change to apply
      */
     private applyConfigChange(configChange: ConfigChange): void {
         if (configChange.type === 'add_server') {
+            // Check if already exists
             const existing = this.state.clusterConfig.find(s => s.id === configChange.server.id);
             if (!existing) {
                 this.state.clusterConfig.push(configChange.server);
-                logger.info(`Applied add_server: ${configChange.server.id}`);
+                logger.info(`Config applied: Added server ${configChange.server.id}`);
             }
         } else if (configChange.type === 'remove_server') {
-            const index = this.state.clusterConfig.findIndex(s => s.id === configChange.server.id);
-            if (index !== -1) {
-                this.state.clusterConfig.splice(index, 1);
-                logger.info(`Applied remove_server: ${configChange.server.id}`);
-            }
-        }
-    }
+            const serverId = configChange.server.id;
+            const idx = this.state.clusterConfig.findIndex(s => s.id === serverId);
 
-    /**
-     * Execute a client command
-     * 
-     * Implements full log replication for write commands
-     * 
-     * @param command - Command to execute
-     * @param args - Command arguments
-     * @returns Command result
-     */
-    async executeCommand(command: string, args: string[]): Promise<string> {
-        // Special case: ping
-        if (command === 'ping') {
-            return 'PONG';
-        }
-
-        // Read-only commands - bisa langsung execute tanpa log replication
-        if (command === 'get' || command === 'strln') {
-            return executeKvCommand(this.kvStore, command, args);
-        }
-
-        // Write commands - melalui log replication
-        const commandEntry: Command = {
-            type: command as CommandType,
-            key: args[0],
-            value: args[1],
-        };
-
-        const entry: LogEntry = {
-            term: this.state.persistent.currentTerm,
-            index: getLastLogIndex(this.state.persistent.log) + 1,
-            entryType: 'command',
-            command: commandEntry,
-            timestamp: Date.now(),
-        };
-
-        // Append to local log
-        this.state.persistent.log.push(entry);
-        logger.info(`Appended command entry at index ${entry.index}: ${command} ${args[0]}`);
-
-        // Replicate to followers
-        const otherNodes = this.state.clusterConfig.filter(s => s.id !== this.config.nodeId);
-        for (const node of otherNodes) {
-            this.replicateToFollower(node);
-        }
-
-        // Wait for commit
-        const startTime = Date.now();
-        const timeout = 5000;
-
-        while (Date.now() - startTime < timeout) {
-            if (this.state.volatile.lastApplied >= entry.index) {
-                logger.info(`Command at index ${entry.index} committed and applied`);
-                
-                // ✅ PERBAIKAN: Jangan execute lagi!
-                // Entry sudah di-apply di applyCommittedEntries()
-                // Untuk write commands, cukup return OK message
-                if (command === 'set' || command === 'append') {
-                    return 'OK';
-                } else if (command === 'del') {
-                    return '1'; // atau '0' tergantung apakah key ditemukan
+            if (idx !== -1) {
+                // IMPORTANT: If we're the leader and removing a DIFFERENT node,
+                // we need to notify that node BEFORE removing it from our config.
+                // Otherwise, replicateToAllFollowers won't include the removed node.
+                if (this.state.nodeState === NodeState.LEADER && serverId !== this.config.nodeId) {
+                    logger.info(`Sending commit notification to ${serverId} before removing from config...`);
+                    // Send multiple heartbeats to ensure the removed node receives the commit
+                    this.replicateToAllFollowers();
+                    setTimeout(() => {
+                        if (this.state.nodeState === NodeState.LEADER) {
+                            this.replicateToAllFollowersIncluding(serverId);
+                        }
+                    }, 50);
+                    setTimeout(() => {
+                        if (this.state.nodeState === NodeState.LEADER) {
+                            this.replicateToAllFollowersIncluding(serverId);
+                        }
+                    }, 100);
+                    setTimeout(() => {
+                        if (this.state.nodeState === NodeState.LEADER) {
+                            this.replicateToAllFollowersIncluding(serverId);
+                        }
+                    }, 150);
                 }
-                
-                // Jika perlu return value hasil eksekusi, simpan hasil di entry
-                // atau read dari state machine (tapi ini berisiko race condition)
-                return 'OK';
+
+                // Now remove from cluster config
+                this.state.clusterConfig.splice(idx, 1);
+                logger.info(`Config applied: Removed server ${serverId}`);
+
+                // Clean up leader state for removed server
+                if (this.state.leaderState) {
+                    this.state.leaderState.nextIndex.delete(serverId);
+                    this.state.leaderState.matchIndex.delete(serverId);
+                }
+
+                // If WE were removed, shut down this node
+                // This handles both leader and follower cases
+                if (serverId === this.config.nodeId) {
+                    logger.info('This node was removed from cluster, shutting down...');
+
+                    // If we're the leader, send heartbeats to propagate the commit before shutting down
+                    // This ensures all followers receive the updated leaderCommit
+                    if (this.state.nodeState === NodeState.LEADER) {
+                        logger.info('Propagating commit to followers before shutdown...');
+                        // Send multiple heartbeats to ensure propagation
+                        this.replicateToAllFollowers();
+                        setTimeout(() => {
+                            if (this.state.nodeState === NodeState.LEADER) {
+                                this.replicateToAllFollowers();
+                            }
+                        }, 100);
+                        setTimeout(() => {
+                            if (this.state.nodeState === NodeState.LEADER) {
+                                this.replicateToAllFollowers();
+                            }
+                        }, 200);
+                        setTimeout(() => {
+                            if (this.state.nodeState === NodeState.LEADER) {
+                                this.replicateToAllFollowers();
+                            }
+                        }, 300);
+                    }
+
+                    // Transition to follower after a delay to allow heartbeats to be sent
+                    setTimeout(() => {
+                        this.transitionTo(NodeState.FOLLOWER, 'removed from cluster');
+                    }, 500);
+
+                    // Longer delay to allow commit propagation and response to be sent
+                    setTimeout(() => this.stop(), 2000);
+                }
             }
-            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+    }
+
+    /**
+     * Replicate to all followers INCLUDING a specific node that may have been removed
+     * This is used to send commit notifications to nodes being removed
+     */
+    private replicateToAllFollowersIncluding(nodeId: string): void {
+        if (this.state.nodeState !== NodeState.LEADER) {
+            return;
         }
 
-        throw new Error('Command replication timeout');
+        // Find the node info - it might have been removed from clusterConfig
+        let nodeToReplicate: ServerInfo | undefined = this.state.clusterConfig.find(s => s.id === nodeId);
+
+        // If not in clusterConfig, try to reconstruct it (assume hostname = nodeId, port = 3000)
+        if (!nodeToReplicate) {
+            nodeToReplicate = { id: nodeId, address: nodeId, port: 3000 };
+        }
+
+        // Replicate to this specific node
+        this.replicateToFollower(nodeToReplicate);
+
+        // Also replicate to all current followers
+        this.replicateToAllFollowers();
     }
 
     // ============================================================================
-    // Membership Changes (Person 1)
+    // Membership Changes (Person 1 + Person 3 Integration)
     // ============================================================================
 
     /**
-     * Add a new server to the cluster
+     * Add a new server to the cluster (with Log Replication)
      * 
-     * This implements the membership change protocol from the Raft paper.
-     * The change is committed through the log like any other entry.
+     * This implements the membership change protocol:
+     * 1. Create config change log entry
+     * 2. Replicate to followers
+     * 3. Wait for commit (majority acknowledgment)
+     * 4. Apply config change (adding to cluster)
+     * 5. Return success
      * 
      * @param request - AddServer request
      * @returns AddServer response
@@ -819,31 +1036,70 @@ export class RaftNode extends EventEmitter implements IRaftNode {
         this.state.persistent.log.push(entry);
         logger.info(`Appended config change entry at index ${entry.index}`);
 
-        // Replicate to followers
-        const otherNodes = this.state.clusterConfig.filter(s => s.id !== this.config.nodeId);
-        for (const node of otherNodes) {
-            this.replicateToFollower(node);
-        }
-
-        // Add to cluster configuration (apply immediately for now)
-        this.state.clusterConfig.push(newServer);
-
-        // Initialize leader state for new server
+        // Update our own matchIndex (leader always matches itself)
         if (this.state.leaderState) {
+            this.state.leaderState.matchIndex.set(this.config.nodeId, entry.index);
+
+            // Initialize leader state for new server (before replication)
+            // This allows us to start replicating to the new server immediately
             this.state.leaderState.nextIndex.set(newServer.id, entry.index + 1);
             this.state.leaderState.matchIndex.set(newServer.id, 0);
         }
 
-        logger.info(`Server ${newServer.id} added to cluster. New cluster size: ${this.state.clusterConfig.length}`);
+        // Wait for the config change to be committed
+        return new Promise<AddServerResponse>((resolve) => {
+            // Store pending config change
+            this.pendingCommands.set(entry.index, {
+                resolve: () => {
+                    logger.info(`Server ${newServer.id} added to cluster. New cluster size: ${this.state.clusterConfig.length}`);
+                    resolve({
+                        success: true,
+                        leaderId: this.config.nodeId,
+                    });
+                },
+                reject: (error: Error) => {
+                    logger.error(`Failed to add server ${newServer.id}: ${error.message}`);
+                    resolve({
+                        success: false,
+                        leaderId: this.config.nodeId,
+                        error: error.message,
+                    });
+                },
+                command: { type: 'set', key: '__config__', value: 'add_server' }, // Dummy command for typing
+            });
 
-        return {
-            success: true,
-            leaderId: this.config.nodeId,
-        };
+            // Set timeout for config change
+            const timeoutId = setTimeout(() => {
+                if (this.pendingCommands.has(entry.index)) {
+                    this.pendingCommands.delete(entry.index);
+                    logger.error(`Timeout adding server ${newServer.id}`);
+                    resolve({
+                        success: false,
+                        leaderId: this.config.nodeId,
+                        error: 'Timeout waiting for commit',
+                    });
+                }
+            }, RaftNode.COMMAND_TIMEOUT);
+
+            const pending = this.pendingCommands.get(entry.index);
+            if (pending) {
+                (pending as any).timeoutId = timeoutId;
+            }
+
+            // Trigger immediate replication
+            this.replicateToAllFollowers();
+        });
     }
 
     /**
-     * Remove a server from the cluster
+     * Remove a server from the cluster (with Log Replication)
+     * 
+     * This implements the membership change protocol:
+     * 1. Create config change log entry
+     * 2. Replicate to followers
+     * 3. Wait for commit (majority acknowledgment)
+     * 4. Apply config change (removing from cluster)
+     * 5. Return success
      * 
      * @param request - RemoveServer request
      * @returns RemoveServer response
@@ -884,35 +1140,55 @@ export class RaftNode extends EventEmitter implements IRaftNode {
         this.state.persistent.log.push(entry);
         logger.info(`Appended config change entry at index ${entry.index}`);
 
-        // Replicate to followers
-        const otherNodes = this.state.clusterConfig.filter(s => s.id !== this.config.nodeId);
-        for (const node of otherNodes) {
-            this.replicateToFollower(node);
-        }
-
-        // Remove from cluster configuration (apply immediately for now)
-        this.state.clusterConfig.splice(serverIndex, 1);
-
-        // Clean up leader state for removed server
+        // Update our own matchIndex (leader always matches itself)
         if (this.state.leaderState) {
-            this.state.leaderState.nextIndex.delete(serverId);
-            this.state.leaderState.matchIndex.delete(serverId);
+            this.state.leaderState.matchIndex.set(this.config.nodeId, entry.index);
         }
 
-        logger.info(`Server ${serverId} removed from cluster. New cluster size: ${this.state.clusterConfig.length}`);
+        // Wait for the config change to be committed
+        return new Promise<RemoveServerResponse>((resolve) => {
+            // Store pending config change
+            this.pendingCommands.set(entry.index, {
+                resolve: () => {
+                    logger.info(`Server ${serverId} removed from cluster. New cluster size: ${this.state.clusterConfig.length}`);
+                    // Note: If this node was removed, applyConfigChange handles the shutdown
+                    resolve({
+                        success: true,
+                        leaderId: this.config.nodeId,
+                    });
+                },
+                reject: (error: Error) => {
+                    logger.error(`Failed to remove server ${serverId}: ${error.message}`);
+                    resolve({
+                        success: false,
+                        leaderId: this.config.nodeId,
+                        error: error.message,
+                    });
+                },
+                command: { type: 'set', key: '__config__', value: 'remove_server' }, // Dummy command for typing
+            });
 
-        // If we're removing ourselves, step down
-        if (serverId === this.config.nodeId) {
-            logger.info('Removed self from cluster, stepping down');
-            this.transitionTo(NodeState.FOLLOWER, 'removed self from cluster');
-            // Stop the node after responding
-            setTimeout(() => this.stop(), 100);
-        }
+            // Set timeout for config change
+            const timeoutId = setTimeout(() => {
+                if (this.pendingCommands.has(entry.index)) {
+                    this.pendingCommands.delete(entry.index);
+                    logger.error(`Timeout removing server ${serverId}`);
+                    resolve({
+                        success: false,
+                        leaderId: this.config.nodeId,
+                        error: 'Timeout waiting for commit',
+                    });
+                }
+            }, RaftNode.COMMAND_TIMEOUT);
 
-        return {
-            success: true,
-            leaderId: this.config.nodeId,
-        };
+            const pending = this.pendingCommands.get(entry.index);
+            if (pending) {
+                (pending as any).timeoutId = timeoutId;
+            }
+
+            // Trigger immediate replication
+            this.replicateToAllFollowers();
+        });
     }
 
     // ============================================================================
