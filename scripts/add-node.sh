@@ -56,8 +56,8 @@ docker run -d \
     -e CLUSTER_NODES="node1:3000,node2:3000,node3:3000,node4:3000" \
     -e JOIN_MODE=true \
     -e LOG_LEVEL=INFO \
-    -e ELECTION_TIMEOUT_MIN=2000 \
-    -e ELECTION_TIMEOUT_MAX=4000 \
+    -e ELECTION_TIMEOUT_MIN=15000 \
+    -e ELECTION_TIMEOUT_MAX=20000 \
     -e HEARTBEAT_INTERVAL=50 \
     -p "$EXTERNAL_PORT:$INTERNAL_PORT" \
     --cap-add NET_ADMIN \
