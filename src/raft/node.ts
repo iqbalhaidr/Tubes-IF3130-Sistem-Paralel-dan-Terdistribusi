@@ -758,7 +758,7 @@ export class RaftNode extends EventEmitter implements IRaftNode {
                 }
             })
             .catch(err => {
-                logger.debug(`Replication to ${node.id} failed: ${err.message}`);
+                // logger.debug(`Replication to ${node.id} failed: ${err.message}`);
             });
     }
 

@@ -36,7 +36,7 @@ export interface RpcClientOptions {
 }
 
 const DEFAULT_OPTIONS: Required<RpcClientOptions> = {
-    timeout: 5000,
+    timeout: 1000,
     retries: 0,
     retryDelay: 100,
 };
@@ -229,7 +229,17 @@ export class RpcClient {
 
             } catch (error) {
                 lastError = error as Error;
-                logger.warn(`RPC call to ${server.id} failed: ${lastError.message}`);
+                // Don't log network errors - they're expected when nodes are down
+                // Common errors: "Request timeout", "ECONNRESET", "socket hang up"
+                // Only log unexpected errors at WARN level
+                const isNetworkError = lastError.message.includes('timeout') ||
+                    lastError.message.includes('ECONNRESET') ||
+                    lastError.message.includes('hang up') ||
+                    lastError.message.includes('ECONNREFUSED');
+
+                if (!isNetworkError) {
+                    logger.warn(`RPC call to ${server.id} failed: ${lastError.message}`);
+                }
 
                 if (attempt < this.options.retries) {
                     await sleep(this.options.retryDelay);
