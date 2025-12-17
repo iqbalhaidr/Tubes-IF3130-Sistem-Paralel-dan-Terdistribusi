@@ -258,6 +258,8 @@ export class RaftNode extends EventEmitter implements IRaftNode {
      * Handle election timeout
      * Person 2 will implement the full election logic
      */
+    private electionInProgress = false;  // Flag to prevent concurrent elections
+
     private onElectionTimeout(): void {
         if (this.state.nodeState === NodeState.LEADER) {
             return; // Leaders don't have election timeout
@@ -266,6 +268,13 @@ export class RaftNode extends EventEmitter implements IRaftNode {
         // In join mode, don't start elections - wait to be added by leader
         if (this.config.joinMode) {
             logger.debug('Join mode active, skipping election');
+            this.resetElectionTimer();
+            return;
+        }
+
+        // Don't start new election if one is already in progress
+        if (this.electionInProgress) {
+            logger.debug('Election already in progress, resetting timer');
             this.resetElectionTimer();
             return;
         }
@@ -319,6 +328,9 @@ export class RaftNode extends EventEmitter implements IRaftNode {
      * 6. If received AppendEntries from new leader, convert to follower
      */
     startElection(): void {
+        // Mark election as in progress to prevent concurrent elections
+        this.electionInProgress = true;
+
         // Transition to candidate
         this.transitionTo(NodeState.CANDIDATE, 'starting election');
 
@@ -360,10 +372,14 @@ export class RaftNode extends EventEmitter implements IRaftNode {
         );
 
         // Wait for all responses and count votes atomically
+        // IMPORTANT: Save the term for this election to avoid issues if term changes while waiting
+        const electionTerm = term;
+
         Promise.allSettled(votePromises).then(results => {
-            // Check if still candidate (might have become follower)
-            if (this.state.nodeState !== NodeState.CANDIDATE) {
-                logger.debug('No longer candidate, ignoring election results');
+            // Check if still candidate AND still in the same term
+            if (this.state.nodeState !== NodeState.CANDIDATE || this.state.persistent.currentTerm !== electionTerm) {
+                logger.debug(`No longer candidate for term ${electionTerm}, ignoring election results`);
+                this.electionInProgress = false;  // Clear flag on early exit
                 return;
             }
 
@@ -375,13 +391,15 @@ export class RaftNode extends EventEmitter implements IRaftNode {
 
                     // Check for higher term
                     if (response.term > this.state.persistent.currentTerm) {
+                        this.electionInProgress = false;  // Clear flag before term update
                         this.updateTerm(response.term);
                         return;
                     }
 
-                    // Count vote
-                    if (response.voteGranted && response.term === this.state.persistent.currentTerm) {
+                    // Count vote - compare against election term, not current term
+                    if (response.voteGranted && response.term === electionTerm) {
                         votesReceived++;
+                        logger.debug(`Received vote from node (term ${electionTerm}), total: ${votesReceived}`);
                     }
                 }
             }
@@ -390,9 +408,12 @@ export class RaftNode extends EventEmitter implements IRaftNode {
 
             // Check if won election
             if (votesReceived >= votesNeeded) {
+                this.electionInProgress = false;  // Clear before becoming leader
                 this.transitionTo(NodeState.LEADER, `won election with ${votesReceived} votes`);
             } else {
                 logger.info(`Did not win election, only got ${votesReceived}/${votesNeeded} votes`);
+                this.electionInProgress = false;  // Allow new election attempt
+                this.resetElectionTimer();  // Reset timer to try again
             }
         });
 

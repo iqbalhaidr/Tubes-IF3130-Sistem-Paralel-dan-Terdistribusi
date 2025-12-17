@@ -36,7 +36,7 @@ export interface RpcClientOptions {
 }
 
 const DEFAULT_OPTIONS: Required<RpcClientOptions> = {
-    timeout: 1000,
+    timeout: 3000,  // Increased to handle extreme network delay (up to 1.4s)
     retries: 0,
     retryDelay: 100,
 };
