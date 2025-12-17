@@ -461,12 +461,17 @@ export class RaftNode extends EventEmitter implements IRaftNode {
      * 1. Maintains leader authority (heartbeat)
      * 2. Replicates any pending log entries
      */
+    private heartbeatCounter = 0;
     sendHeartbeat(): void {
         if (this.state.nodeState !== NodeState.LEADER) {
             return;
         }
 
-        logger.debug('Sending heartbeat/replication to followers');
+        // Log heartbeat periodically (every 5 seconds = 100 heartbeats)
+        this.heartbeatCounter++;
+        if (this.heartbeatCounter % 100 === 0) {
+            logger.info(`[HEARTBEAT] Leader ${this.config.nodeId} sending heartbeat to followers (term=${this.state.persistent.currentTerm})`);
+        }
 
         // Use the replication method which includes log entries
         this.replicateToAllFollowers();
