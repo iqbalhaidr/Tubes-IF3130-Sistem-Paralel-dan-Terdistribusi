@@ -754,7 +754,7 @@ export class RaftNode extends EventEmitter implements IRaftNode {
                     logger.debug(`Replication to ${node.id} failed, retrying with nextIndex=${newNextIndex}`);
 
                     // Retry replication immediately
-                    setTimeout(() => this.replicateToFollower(node), 10);
+                    setTimeout(() => this.replicateToFollower(node), 200);
                 }
             })
             .catch(err => {
