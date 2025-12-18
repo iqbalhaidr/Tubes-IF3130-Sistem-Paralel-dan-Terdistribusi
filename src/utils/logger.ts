@@ -94,14 +94,7 @@ function formatTimestamp(): string {
 
 /**
  * Logger class for structured logging with component context
- * 
- * Usage:
- * ```typescript
- * const logger = new Logger('RaftNode');
- * logger.info('Starting election');
- * logger.debug('Vote count:', voteCount);
- * logger.error('Failed to connect to peer', error);
- * ```
+\
  */
 export class Logger {
     private component: string;

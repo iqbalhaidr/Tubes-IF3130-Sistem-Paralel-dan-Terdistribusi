@@ -1,16 +1,6 @@
 /**
- * Key-Value Store Module
- * 
- * This module provides the in-memory key-value store that serves as the
- * state machine for the Raft cluster. The store supports the following operations:
- * - ping: Check connection
- * - get: Retrieve a value
- * - set: Set a value
- * - strln: Get string length
- * - del: Delete a key
- * - append: Append to a value
- * 
- * Person 3 will integrate this with log replication to ensure consistency.
+ * Key-Value Store Module, provides the in-memory key-value store that serves as the
+ * state machine for the Raft cluster.
  * 
  * @module store/kv-store
  */

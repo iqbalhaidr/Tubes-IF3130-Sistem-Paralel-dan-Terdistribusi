@@ -1,11 +1,6 @@
 /**
- * JSON-RPC Server Module
- * 
- * This module provides an HTTP-based JSON-RPC 2.0 server for handling
+ * JSON-RPC Server Module, provides an HTTP-based JSON-RPC 2.0 server for handling
  * incoming RPC requests from other nodes and clients.
- * 
- * The server validates requests, routes them to appropriate handlers,
- * and returns properly formatted JSON-RPC responses.
  * 
  * @module rpc/server
  */
@@ -129,7 +124,7 @@ function validateRequest(body: any): { valid: true; request: JsonRpcRequest } | 
         };
     }
 
-    // Check id (must be string or number)
+    // Check id (string or number)
     if (body.id === undefined || body.id === null) {
         return {
             valid: false,
@@ -158,16 +153,6 @@ function validateRequest(body: any): { valid: true; request: JsonRpcRequest } | 
 
 /**
  * RPC Server class for handling JSON-RPC requests
- * 
- * Usage:
- * ```typescript
- * const server = new RpcServer(3000);
- * server.registerHandler('request_vote', async (params) => {
- *   // Handle request
- *   return { term: 1, voteGranted: true };
- * });
- * server.start();
- * ```
  */
 export class RpcServer {
     private app: Express;
@@ -269,7 +254,7 @@ export class RpcServer {
             const err = error as Error;
             logger.error(`Method ${request.method} failed:`, err.message);
 
-            // Check if it's an RPC error with a code
+            // Check if RPC error with a code
             if ('code' in err && typeof (err as any).code === 'number') {
                 return createErrorResponse(request.id, {
                     code: (err as any).code,
@@ -278,7 +263,6 @@ export class RpcServer {
                 });
             }
 
-            // Generic internal error
             return createErrorResponse(request.id, {
                 code: RPC_ERROR_CODES.INTERNAL_ERROR,
                 message: err.message || 'Internal error',

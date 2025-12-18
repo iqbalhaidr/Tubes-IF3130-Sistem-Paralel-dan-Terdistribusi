@@ -1,10 +1,6 @@
 /**
- * RPC Types Module
- * 
- * This module defines all JSON-RPC 2.0 message types and Raft-specific
+ * RPC Types Module, defines all JSON-RPC 2.0 message types and Raft-specific
  * RPC request/response structures for inter-node and client communication.
- * 
- * Based on JSON-RPC 2.0 Specification: https://www.jsonrpc.org/specification
  * 
  * @module rpc/types
  */
@@ -16,17 +12,10 @@ import { LogEntry } from '../raft/types';
 // JSON-RPC 2.0 Base Types
 // ============================================================================
 
-/**
- * JSON-RPC 2.0 Request object
- */
 export interface JsonRpcRequest {
-    /** Must be exactly "2.0" per JSON-RPC spec */
     jsonrpc: '2.0';
-    /** Name of the method to invoke */
     method: string;
-    /** Parameters for the method (structured or positional) */
     params?: any;
-    /** Request identifier for matching response */
     id: string | number;
 }
 
@@ -35,9 +24,7 @@ export interface JsonRpcRequest {
  */
 export interface JsonRpcSuccessResponse {
     jsonrpc: '2.0';
-    /** Result of the method invocation */
     result: any;
-    /** Same ID as the request */
     id: string | number;
 }
 
@@ -45,11 +32,8 @@ export interface JsonRpcSuccessResponse {
  * JSON-RPC 2.0 Error object
  */
 export interface JsonRpcError {
-    /** Error code (negative for pre-defined errors) */
     code: number;
-    /** Short description of the error */
     message: string;
-    /** Additional error data */
     data?: any;
 }
 
@@ -58,9 +42,7 @@ export interface JsonRpcError {
  */
 export interface JsonRpcErrorResponse {
     jsonrpc: '2.0';
-    /** Error object with code and message */
     error: JsonRpcError;
-    /** Same ID as the request, or null if ID couldn't be determined */
     id: string | number | null;
 }
 
@@ -72,33 +54,22 @@ export type JsonRpcResponse = JsonRpcSuccessResponse | JsonRpcErrorResponse;
 // ============================================================================
 
 export const RPC_ERROR_CODES = {
-    /** Invalid JSON was received */
     PARSE_ERROR: -32700,
-    /** The JSON sent is not a valid Request object */
     INVALID_REQUEST: -32600,
-    /** The method does not exist or is not available */
     METHOD_NOT_FOUND: -32601,
-    /** Invalid method parameter(s) */
     INVALID_PARAMS: -32602,
-    /** Internal JSON-RPC error */
     INTERNAL_ERROR: -32603,
-
-    // Custom error codes (must be in -32000 to -32099 range)
-    /** Not the leader, request should be redirected */
     NOT_LEADER: -32000,
-    /** Request timeout */
     TIMEOUT: -32001,
-    /** Server is not ready (e.g., election in progress) */
     NOT_READY: -32002,
 } as const;
 
 // ============================================================================
-// Raft RPC Types - RequestVote (Leader Election - Person 2)
+// Raft RPC Types - RequestVote
 // ============================================================================
 
 /**
- * RequestVote RPC request (from Candidate to all other nodes)
- * Used during leader election to request votes from other nodes.
+ * RequestVote RPC request (from Candidate to all other nodes) for leader election.
  */
 export interface RequestVoteRequest {
     /** Candidate's term number */

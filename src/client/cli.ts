@@ -283,7 +283,7 @@ export class RaftClient {
 
                 // Handle RPC error
                 if ('error' in response) {
-                    // Check if it's a "not leader" error with redirect info
+                    // Check "not leader" error with redirect info
                     if (response.error.code === RPC_ERROR_CODES.NOT_LEADER &&
                         response.error.data?.leaderAddress) {
                         this.log(`Redirecting to leader at ${response.error.data.leaderAddress}`);
@@ -306,7 +306,7 @@ export class RaftClient {
                     continue;
                 }
 
-                // Success! Cache the leader
+                // Cache the leader
                 if (result.success && result.leaderId) {
                     this.cachedLeader = currentServer;
                 }
@@ -314,7 +314,6 @@ export class RaftClient {
                 return result;
 
             } catch (error) {
-                // Connection error, try next server
                 this.log(`Error: ${(error as Error).message}`);
 
                 // Try the next server in the list
@@ -631,11 +630,7 @@ Type ${COLORS.green}help${COLORS.reset} for available commands.
     });
 }
 
-// ============================================================================
-// Entry Point
-// ============================================================================
-
-// Run CLI if this is the main module
+// Run Main CLI
 if (require.main === module) {
     runCli().catch(console.error);
 }

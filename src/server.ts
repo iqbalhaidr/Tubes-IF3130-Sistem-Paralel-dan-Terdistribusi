@@ -1,17 +1,6 @@
 /**
- * Raft Server Entry Point
- * 
- * This is the main entry point for starting a Raft node server.
+ * Raft Server Entry Point, the main entry point for starting a Raft node server.
  * Configuration is loaded from environment variables.
- * 
- * Environment Variables:
- * - NODE_ID: Unique identifier for this node (default: "node1")
- * - PORT: Port to listen on (default: 3000)
- * - CLUSTER_NODES: Comma-separated list of nodes (e.g., "node1:3000,node2:3000")
- * - ELECTION_TIMEOUT_MIN: Minimum election timeout in ms (default: 150)
- * - ELECTION_TIMEOUT_MAX: Maximum election timeout in ms (default: 300)
- * - HEARTBEAT_INTERVAL: Heartbeat interval in ms (default: 50)
- * - LOG_LEVEL: Logging level (DEBUG, INFO, WARN, ERROR)
  * 
  * @module server
  */

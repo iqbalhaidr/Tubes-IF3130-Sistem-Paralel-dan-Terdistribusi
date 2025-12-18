@@ -1,7 +1,5 @@
 /**
- * Configuration module for the Raft Key-Value Store
- * 
- * This module handles loading configuration from environment variables
+ * Configuration module for the Raft Key-Value Store, handles loading configuration from environment variables
  * and provides default values for local development.
  * 
  * @module config
@@ -11,11 +9,8 @@
  * Server information for a node in the Raft cluster
  */
 export interface ServerInfo {
-    /** Unique identifier for the server */
     id: string;
-    /** Hostname or IP address */
     address: string;
-    /** Port number for RPC communication */
     port: number;
 }
 
@@ -23,17 +18,11 @@ export interface ServerInfo {
  * Configuration for the Raft node
  */
 export interface RaftConfig {
-    /** This node's unique identifier */
     nodeId: string;
-    /** Port to listen on for RPC requests */
     port: number;
-    /** List of all servers in the initial cluster */
     clusterNodes: ServerInfo[];
-    /** Election timeout range in milliseconds [min, max] */
     electionTimeout: [number, number];
-    /** Heartbeat interval in milliseconds */
     heartbeatInterval: number;
-    /** If true, this node is joining and should not participate in elections */
     joinMode: boolean;
 }
 
@@ -60,7 +49,7 @@ function parseClusterNodes(clusterNodesStr: string): ServerInfo[] {
 }
 
 /**
- * Load configuration from environment variables with sensible defaults
+ * Load configuration from environment variables with default values
  * 
  * Environment variables:
  * - NODE_ID: Unique identifier for this node (default: "node1")

@@ -1,14 +1,6 @@
 /**
- * Raft Core Types Module
- * 
- * This module defines the core data structures for the Raft consensus algorithm,
+ * Raft Core Types Module -> defines the core data structures for the Raft consensus algorithm,
  * including node states, log entries, and the overall Raft state machine.
- * 
- * These types are shared across all team members:
- * - Person 1: Uses these for RPC and membership
- * - Person 2: Uses these for election and heartbeat logic
- * - Person 3: Uses these for log replication and KV store
- * 
  * @module raft/types
  */
 
@@ -20,12 +12,6 @@ import { ServerInfo } from '../config';
 
 /**
  * Raft node states
- * 
- * State transitions:
- * - FOLLOWER -> CANDIDATE: Election timeout expires
- * - CANDIDATE -> LEADER: Receives votes from majority
- * - CANDIDATE -> FOLLOWER: Discovers current leader or new term
- * - LEADER -> FOLLOWER: Discovers server with higher term
  */
 export enum NodeState {
     FOLLOWER = 'FOLLOWER',
@@ -39,9 +25,6 @@ export enum NodeState {
 
 /**
  * Types of log entries
- * - 'command': Normal key-value operations
- * - 'config': Cluster configuration changes (membership)
- * - 'noop': No-operation entry (used by new leader)
  */
 export type LogEntryType = 'command' | 'config' | 'noop';
 
@@ -54,11 +37,8 @@ export type CommandType = 'set' | 'del' | 'append';
  * A command to be stored in the log and applied to the state machine
  */
 export interface Command {
-    /** Type of command */
     type: CommandType;
-    /** Key to operate on */
     key: string;
-    /** Value for the operation (for set and append) */
     value?: string;
 }
 
@@ -74,22 +54,13 @@ export interface ConfigChange {
 
 /**
  * A single entry in the Raft log
- * 
- * Log entries are replicated from the leader to all followers.
- * Once committed (replicated to majority), they are applied to the state machine.
  */
 export interface LogEntry {
-    /** Term when entry was received by leader */
     term: number;
-    /** Position in the log (1-indexed, 0 means empty log) */
     index: number;
-    /** Type of log entry */
     entryType: LogEntryType;
-    /** Command to apply to state machine (for 'command' type) */
     command?: Command;
-    /** Configuration change (for 'config' type) */
     configChange?: ConfigChange;
-    /** Timestamp when entry was created */
     timestamp: number;
 }
 
@@ -99,14 +70,10 @@ export interface LogEntry {
 
 /**
  * Persistent state on all servers
- * (Updated on stable storage before responding to RPCs)
  */
 export interface PersistentState {
-    /** Latest term server has seen (starts at 0) */
     currentTerm: number;
-    /** CandidateId that received vote in current term (null if none) */
     votedFor: string | null;
-    /** Log entries (first index is 1) */
     log: LogEntry[];
 }
 
@@ -119,9 +86,7 @@ export interface PersistentState {
  * (Reinitialized after restart)
  */
 export interface VolatileState {
-    /** Index of highest log entry known to be committed */
     commitIndex: number;
-    /** Index of highest log entry applied to state machine */
     lastApplied: number;
 }
 
@@ -130,15 +95,7 @@ export interface VolatileState {
  * (Reinitialized after election)
  */
 export interface LeaderState {
-    /** 
-     * For each server, index of next log entry to send to that server
-     * (initialized to leader's last log index + 1)
-     */
     nextIndex: Map<string, number>;
-    /**
-     * For each server, index of highest log entry known to be replicated
-     * (initialized to 0)
-     */
     matchIndex: Map<string, number>;
 }
 
@@ -150,17 +107,11 @@ export interface LeaderState {
  * Complete state for a Raft node
  */
 export interface RaftState {
-    /** Current role of this node */
     nodeState: NodeState;
-    /** Persistent state that must survive restarts */
     persistent: PersistentState;
-    /** Volatile state on all servers */
     volatile: VolatileState;
-    /** Volatile state only on leaders (null if not leader) */
     leaderState: LeaderState | null;
-    /** Current leader ID (null if unknown) */
     leaderId: string | null;
-    /** Current cluster configuration */
     clusterConfig: ServerInfo[];
 }
 
@@ -170,7 +121,6 @@ export interface RaftState {
 
 /**
  * Create an initial empty log entry (index 0, used as sentinel)
- * This simplifies log index calculations.
  */
 export function createEmptyLogEntry(): LogEntry {
     return {
@@ -221,9 +171,7 @@ export function createLeaderState(
     const matchIndex = new Map<string, number>();
 
     for (const server of clusterConfig) {
-        // Initialize nextIndex to leader's last log index + 1
         nextIndex.set(server.id, lastLogIndex + 1);
-        // Initialize matchIndex to 0
         matchIndex.set(server.id, 0);
     }
 
@@ -266,7 +214,6 @@ export function getLastLogTerm(log: LogEntry[]): number {
 
 /**
  * Check if a candidate's log is at least as up-to-date as the voter's log
- * (Used in RequestVote RPC)
  * 
  * @param voterLastIndex - Voter's last log index
  * @param voterLastTerm - Voter's last log term
@@ -280,9 +227,8 @@ export function isLogUpToDate(
     candidateLastIndex: number,
     candidateLastTerm: number
 ): boolean {
-    // Candidate's log is up-to-date if:
-    // 1. Candidate's last term is greater, OR
-    // 2. Terms are equal and candidate's log is at least as long
+    // Candidate's log is up-to-date if candidate last term > voter last term, or
+    // Terms are equal and candidates log >= voters log
     if (candidateLastTerm !== voterLastTerm) {
         return candidateLastTerm > voterLastTerm;
     }

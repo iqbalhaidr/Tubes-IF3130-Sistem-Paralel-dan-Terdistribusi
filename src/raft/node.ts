@@ -1,12 +1,7 @@
 /**
  * Raft Node Module
- * 
- * This module provides the base RaftNode class that implements the Raft consensus
- * protocol. It integrates components from all team members:
- * 
- * - Person 1: RPC system, membership changes
- * - Person 2: Leader election, heartbeat (TODO methods marked)
- * - Person 3: Log replication, state machine (TODO methods marked)
+ * base RaftNode class that implements the Raft consensus
+ * protocol. 
  * 
  * @module raft/node
  */
@@ -49,26 +44,18 @@ const logger = new Logger('RaftNode');
  * interfaces for teammates to implement specific features.
  */
 export class RaftNode extends EventEmitter implements IRaftNode {
-    /** Node configuration */
     private config: RaftConfig;
-    /** Raft state (persistent + volatile) */
     private state: RaftState;
-    /** RPC server for incoming requests */
     private rpcServer: RpcServer;
-    /** RPC client for outgoing requests */
     private rpcClient: RpcClient;
-    /** Key-value store (state machine) */
     private kvStore: KeyValueStore;
-
-    // Timers (Person 2 will manage these)
     private electionTimer: NodeJS.Timeout | null = null;
     private heartbeatTimer: NodeJS.Timeout | null = null;
 
     // ============================================================================
-    // Log Replication (Person 3)
+    // Log Replication
     // ============================================================================
 
-    /** Timeout for waiting for command commit (ms) */
     private static readonly COMMAND_TIMEOUT = 10000;
 
     /**
@@ -125,8 +112,7 @@ export class RaftNode extends EventEmitter implements IRaftNode {
         if (leader) {
             return `${leader.address}:${leader.port}`;
         }
-        // Fallback: if leader is not in our config (e.g., new node that won election),
-        // assume the leaderId is the hostname and use default port
+        // Fallback: if leader is not in config, assume the leaderId is the hostname and use default port
         return `${this.state.leaderId}:3000`;
     }
 
@@ -144,7 +130,6 @@ export class RaftNode extends EventEmitter implements IRaftNode {
     async start(): Promise<void> {
         logger.info('Starting Raft node...');
 
-        // Start RPC server
         await this.rpcServer.start();
 
         // Start as follower and begin election timer
@@ -232,7 +217,7 @@ export class RaftNode extends EventEmitter implements IRaftNode {
     }
 
     // ============================================================================
-    // Timer Management (Person 2 will enhance these)
+    // Timer Management
     // ============================================================================
 
     /**
@@ -256,23 +241,22 @@ export class RaftNode extends EventEmitter implements IRaftNode {
 
     /**
      * Handle election timeout
-     * Person 2 will implement the full election logic
      */
-    private electionInProgress = false;  // Flag to prevent concurrent elections
+    private electionInProgress = false;
 
     private onElectionTimeout(): void {
         if (this.state.nodeState === NodeState.LEADER) {
-            return; // Leaders don't have election timeout
+            return;
         }
 
-        // In join mode, don't start elections - wait to be added by leader
+        // join mode -> wait to be added by leader
         if (this.config.joinMode) {
             logger.debug('Join mode active, skipping election');
             this.resetElectionTimer();
             return;
         }
 
-        // Don't start new election if one is already in progress
+        // return if election is in progress
         if (this.electionInProgress) {
             logger.debug('Election already in progress, resetting timer');
             this.resetElectionTimer();
@@ -313,22 +297,13 @@ export class RaftNode extends EventEmitter implements IRaftNode {
     }
 
     // ============================================================================
-    // Leader Election (Person 2 - TODO: Full implementation)
+    // Leader Election 
     // ============================================================================
 
     /**
      * Start a leader election
-     * 
-     * TODO for Person 2:
-     * 1. Increment current term
-     * 2. Vote for self
-     * 3. Reset election timer
-     * 4. Send RequestVote RPCs to all other servers
-     * 5. If received majority votes, become leader
-     * 6. If received AppendEntries from new leader, convert to follower
      */
     startElection(): void {
-        // Mark election as in progress to prevent concurrent elections
         this.electionInProgress = true;
 
         // Transition to candidate
@@ -348,7 +323,6 @@ export class RaftNode extends EventEmitter implements IRaftNode {
         this.resetElectionTimer();
 
         // Request votes from all other servers
-        // TODO: Person 2 - implement vote collection and majority check
         const request: RequestVoteRequest = {
             term,
             candidateId: this.config.nodeId,
@@ -366,13 +340,11 @@ export class RaftNode extends EventEmitter implements IRaftNode {
             this.rpcClient.call<RequestVoteResponse>(node, 'request_vote', request)
                 .catch(err => {
                     logger.debug(`RequestVote to ${node.id} failed: ${err.message}`);
-                    // Return rejected vote on error
                     return { term: 0, voteGranted: false } as RequestVoteResponse;
                 })
         );
 
         // Wait for all responses and count votes atomically
-        // IMPORTANT: Save the term for this election to avoid issues if term changes while waiting
         const electionTerm = term;
 
         Promise.allSettled(votePromises).then(results => {
@@ -383,7 +355,7 @@ export class RaftNode extends EventEmitter implements IRaftNode {
                 return;
             }
 
-            let votesReceived = 1; // Self vote
+            let votesReceived = 1;
 
             for (const result of results) {
                 if (result.status === 'fulfilled') {
@@ -391,12 +363,12 @@ export class RaftNode extends EventEmitter implements IRaftNode {
 
                     // Check for higher term
                     if (response.term > this.state.persistent.currentTerm) {
-                        this.electionInProgress = false;  // Clear flag before term update
+                        this.electionInProgress = false;
                         this.updateTerm(response.term);
                         return;
                     }
 
-                    // Count vote - compare against election term, not current term
+                    // Count vote - compare against election term
                     if (response.voteGranted && response.term === electionTerm) {
                         votesReceived++;
                         logger.debug(`Received vote from node (term ${electionTerm}), total: ${votesReceived}`);
@@ -408,12 +380,12 @@ export class RaftNode extends EventEmitter implements IRaftNode {
 
             // Check if won election
             if (votesReceived >= votesNeeded) {
-                this.electionInProgress = false;  // Clear before becoming leader
+                this.electionInProgress = false;
                 this.transitionTo(NodeState.LEADER, `won election with ${votesReceived} votes`);
             } else {
                 logger.info(`Did not win election, only got ${votesReceived}/${votesNeeded} votes`);
-                this.electionInProgress = false;  // Allow new election attempt
-                this.resetElectionTimer();  // Reset timer to try again
+                this.electionInProgress = false;
+                this.resetElectionTimer();
             }
         });
 
@@ -431,8 +403,6 @@ export class RaftNode extends EventEmitter implements IRaftNode {
      * @returns RequestVote response
      */
     async handleRequestVote(request: RequestVoteRequest): Promise<RequestVoteResponse> {
-        // TODO for Person 2: Full implementation
-        // Current basic implementation:
 
         const currentTerm = this.state.persistent.currentTerm;
 
@@ -450,7 +420,7 @@ export class RaftNode extends EventEmitter implements IRaftNode {
         const votedFor = this.state.persistent.votedFor;
         const canVote = votedFor === null || votedFor === request.candidateId;
 
-        // Check if candidate's log is at least as up-to-date as ours
+        // Check if candidate's log is at least as up-to-date
         const lastLogIndex = getLastLogIndex(this.state.persistent.log);
         const lastLogTerm = getLastLogTerm(this.state.persistent.log);
         const logUpToDate =
@@ -471,16 +441,11 @@ export class RaftNode extends EventEmitter implements IRaftNode {
     }
 
     // ============================================================================
-    // Heartbeat (Person 3 Enhanced)
+    // Heartbeat 
     // ============================================================================
 
     /**
-     * Send heartbeat to all followers (Person 3 Enhanced)
-     * 
-     * Now uses the replicateToAllFollowers method which sends
-     * actual log entries along with heartbeat. This serves dual purpose:
-     * 1. Maintains leader authority (heartbeat)
-     * 2. Replicates any pending log entries
+     * Send heartbeat to all followers 
      */
     private heartbeatCounter = 0;
     sendHeartbeat(): void {
@@ -488,28 +453,21 @@ export class RaftNode extends EventEmitter implements IRaftNode {
             return;
         }
 
-        // Log heartbeat periodically (every 5 seconds = 100 heartbeats)
+        // Log heartbeat periodically 
         this.heartbeatCounter++;
         if (this.heartbeatCounter % 100 === 0) {
             logger.info(`[HEARTBEAT] Leader ${this.config.nodeId} sending heartbeat to followers (term=${this.state.persistent.currentTerm})`);
         }
 
-        // Use the replication method which includes log entries
         this.replicateToAllFollowers();
     }
 
     // ============================================================================
-    // Log Replication - Follower Side (Person 3)
+    // Log Replication - Follower Side
     // ============================================================================
 
     /**
-     * Handle incoming AppendEntries RPC (Person 3 - Full Implementation)
-     * 
-     * This method handles both heartbeats and log replication:
-     * 1. Validates term and recognizes leader
-     * 2. Checks log consistency at prevLogIndex
-     * 3. Appends new entries (handling conflicts)
-     * 4. Updates commit index and applies entries to state machine
+     * Handle incoming AppendEntries RPC
      * 
      * @param request - AppendEntries request from leader
      * @returns AppendEntries response
@@ -517,13 +475,13 @@ export class RaftNode extends EventEmitter implements IRaftNode {
     async handleAppendEntries(request: AppendEntriesRequest): Promise<AppendEntriesResponse> {
         const currentTerm = this.state.persistent.currentTerm;
 
-        // Step 1: Reply false if term < currentTerm (§5.1)
+        // Reply false if term < currentTerm (§5.1)
         if (request.term < currentTerm) {
             logger.debug(`Rejecting AppendEntries: term ${request.term} < currentTerm ${currentTerm}`);
             return { term: currentTerm, success: false };
         }
 
-        // Step 2: Update term and convert to follower if needed
+        // Update term and convert to follower if needed
         if (request.term > currentTerm) {
             this.updateTerm(request.term);
         }
@@ -534,47 +492,40 @@ export class RaftNode extends EventEmitter implements IRaftNode {
         }
         this.state.leaderId = request.leaderId;
 
-        // Reset election timer (valid heartbeat received)
+        // Reset election timer
         this.resetElectionTimer();
 
         const log = this.state.persistent.log;
 
-        // Step 3: Reply false if log doesn't contain entry at prevLogIndex with prevLogTerm (§5.3)
+        // Reply false if log doesn't contain entry at prevLogIndex with prevLogTerm (§5.3)
         if (request.prevLogIndex > 0) {
             if (request.prevLogIndex >= log.length) {
-                // Log is too short
                 logger.debug(`Log consistency check failed: prevLogIndex=${request.prevLogIndex} >= log.length=${log.length}`);
                 return { term: this.state.persistent.currentTerm, success: false };
             }
             if (log[request.prevLogIndex].term !== request.prevLogTerm) {
-                // Term mismatch at prevLogIndex
                 logger.debug(`Log consistency check failed: log[${request.prevLogIndex}].term=${log[request.prevLogIndex].term} !== prevLogTerm=${request.prevLogTerm}`);
                 return { term: this.state.persistent.currentTerm, success: false };
             }
         }
 
-        // Step 4: If existing entry conflicts with new one, delete it and all following (§5.3)
-        // Step 5: Append any new entries not already in the log
+        // If existing entry conflicts with new one, delete it and all following
         if (request.entries.length > 0) {
             for (const entry of request.entries) {
                 if (entry.index < log.length) {
-                    // Entry exists at this index
                     if (log[entry.index].term !== entry.term) {
-                        // Conflict! Delete this entry and everything after
                         logger.info(`Conflict at index ${entry.index}: deleting entries from ${entry.index} onwards`);
                         log.splice(entry.index);
                         log.push(entry);
                     }
-                    // If terms match, entry is already there (idempotent)
                 } else {
-                    // New entry, append it
                     log.push(entry);
                     logger.debug(`Appended entry at index ${entry.index}`);
                 }
             }
         }
 
-        // Step 6: If leaderCommit > commitIndex, update commitIndex (§5.3)
+        // If leaderCommit > commitIndex, update commitIndex
         if (request.leaderCommit > this.state.volatile.commitIndex) {
             const oldCommitIndex = this.state.volatile.commitIndex;
             this.state.volatile.commitIndex = Math.min(
@@ -583,10 +534,7 @@ export class RaftNode extends EventEmitter implements IRaftNode {
             );
 
             if (this.state.volatile.commitIndex > oldCommitIndex) {
-                logger.info(`Updated commitIndex from ${oldCommitIndex} to ${this.state.volatile.commitIndex}`);
-
-                // Apply committed entries to state machine
-                this.applyCommittedEntries();
+                logger.info(`Updated commitIndex from ${oldCommitIndex} to ${this.state.volatile.commitIndex}`); this.applyCommittedEntries();
             }
         }
 
@@ -598,32 +546,23 @@ export class RaftNode extends EventEmitter implements IRaftNode {
     }
 
     /**
-     * Execute a client command (Person 3 - Full Implementation)
-     * 
-     * For write commands, this method:
-     * 1. Creates a log entry with the command
-     * 2. Appends to local log
-     * 3. Triggers replication to followers
-     * 4. Waits for majority acknowledgment (commit)
-     * 5. Applies to state machine and returns result
+     * Execute a client command
      * 
      * @param command - Command to execute (set, get, append, del, etc.)
      * @param args - Command arguments
      * @returns Command result
      */
     async executeCommand(command: string, args: string[]): Promise<string> {
-        // Special case: ping doesn't need log replication
+        // ping case
         if (command === 'ping') {
             return 'PONG';
         }
 
-        // Read-only commands can be executed immediately from state machine
-        // These read from the committed state, so they're always consistent
+        // Read-only commands 
         if (command === 'get' || command === 'strln') {
             return executeKvCommand(this.kvStore, command, args);
         }
 
-        // Write commands need to go through log replication
         // Build the Command object based on command type
         const cmd: Command = this.buildCommand(command, args);
 
@@ -640,14 +579,13 @@ export class RaftNode extends EventEmitter implements IRaftNode {
         this.state.persistent.log.push(entry);
         logger.info(`Appended command entry at index ${entry.index}: ${command} ${args.join(' ')}`);
 
-        // Update our own matchIndex (leader always matches itself)
+        // Update our own matchIndex
         if (this.state.leaderState) {
             this.state.leaderState.matchIndex.set(this.config.nodeId, entry.index);
         }
 
         // Create a promise that will be resolved when the entry is committed
         return new Promise<string>((resolve, reject) => {
-            // Store the pending command
             this.pendingCommands.set(entry.index, {
                 resolve,
                 reject,
@@ -668,7 +606,6 @@ export class RaftNode extends EventEmitter implements IRaftNode {
                 (pending as any).timeoutId = timeoutId;
             }
 
-            // Trigger immediate replication to all followers
             this.replicateToAllFollowers();
         });
     }
@@ -696,10 +633,7 @@ export class RaftNode extends EventEmitter implements IRaftNode {
     }
 
     /**
-     * Replicate log entries to all followers (Person 3)
-     * 
-     * Called after a new entry is appended or periodically during heartbeat.
-     * Sends AppendEntries to each follower with entries they're missing.
+     * Replicate log entries to all followers
      */
     private replicateToAllFollowers(): void {
         if (this.state.nodeState !== NodeState.LEADER) {
@@ -715,10 +649,6 @@ export class RaftNode extends EventEmitter implements IRaftNode {
 
     /**
      * Replicate log entries to a single follower (Person 3)
-     * 
-     * Sends AppendEntries RPC with entries from nextIndex onwards.
-     * On success: updates matchIndex and checks for commit.
-     * On failure: decrements nextIndex and retries.
      * 
      * @param node - Follower to replicate to
      */
@@ -744,7 +674,7 @@ export class RaftNode extends EventEmitter implements IRaftNode {
             leaderCommit: this.state.volatile.commitIndex,
         };
 
-        // Log only if sending actual entries (not just heartbeat)
+        // Log only if sending actual entries
         if (entries.length > 0) {
             logger.debug(`Replicating ${entries.length} entries to ${node.id} (prevLogIndex=${prevLogIndex})`);
         }
@@ -758,7 +688,7 @@ export class RaftNode extends EventEmitter implements IRaftNode {
                 }
 
                 if (!this.state.leaderState) {
-                    return; // No longer leader
+                    return;
                 }
 
                 if (response.success) {
@@ -771,7 +701,6 @@ export class RaftNode extends EventEmitter implements IRaftNode {
                         logger.debug(`Replication to ${node.id} succeeded, matchIndex=${newMatchIndex}`);
                     }
 
-                    // Check if we can advance the commit index
                     this.updateCommitIndex();
                 } else {
                     // Decrement nextIndex and retry
@@ -779,7 +708,7 @@ export class RaftNode extends EventEmitter implements IRaftNode {
                     this.state.leaderState.nextIndex.set(node.id, newNextIndex);
                     logger.debug(`Replication to ${node.id} failed, retrying with nextIndex=${newNextIndex}`);
 
-                    // Retry replication immediately
+                    // Retry replication
                     setTimeout(() => this.replicateToFollower(node), 200);
                 }
             })
@@ -789,10 +718,7 @@ export class RaftNode extends EventEmitter implements IRaftNode {
     }
 
     /**
-     * Update the commit index based on majority matchIndex (Person 3)
-     * 
-     * Finds the highest N such that a majority of matchIndex[i] >= N
-     * and log[N].term == currentTerm. Then advances commitIndex to N.
+     * Update the commit index based on majority matchIndex
      */
     private updateCommitIndex(): void {
         if (!this.state.leaderState) {
@@ -802,7 +728,7 @@ export class RaftNode extends EventEmitter implements IRaftNode {
         const log = this.state.persistent.log;
         const currentTerm = this.state.persistent.currentTerm;
 
-        // Collect all matchIndex values (including leader's own)
+        // Collect all matchIndex values
         const matchIndices: number[] = [];
         for (const [serverId, matchIndex] of this.state.leaderState.matchIndex) {
             // Only count servers still in the cluster
@@ -814,17 +740,14 @@ export class RaftNode extends EventEmitter implements IRaftNode {
         // Sort in descending order
         matchIndices.sort((a, b) => b - a);
 
-        // Find the majority position (quorum - 1 because 0-indexed)
+        // Find the majority position (quorum - 1)
         const quorumIndex = Math.floor(this.state.clusterConfig.length / 2);
 
         // The commit index is the matchIndex at the quorum position
-        // This is the highest index replicated to a majority
         if (quorumIndex < matchIndices.length) {
             const newCommitIndex = matchIndices[quorumIndex];
 
-            // Only commit entries from current term (Raft safety guarantee)
-            // This prevents committing entries from previous terms without
-            // a new entry in the current term
+            // Only commit entries from current term
             if (newCommitIndex > this.state.volatile.commitIndex &&
                 log[newCommitIndex]?.term === currentTerm) {
 
@@ -838,58 +761,57 @@ export class RaftNode extends EventEmitter implements IRaftNode {
     }
 
     /**
-     * Apply committed entries to the state machine (Person 3)
-     * 
-     * Applies all entries from lastApplied+1 to commitIndex.
-     * For command entries: executes on KV store.
-     * For config entries: updates cluster configuration.
-     * Resolves pending command promises with results.
+     * Apply committed entries to the state machine
      */
     private applyCommittedEntries(): void {
-        const log = this.state.persistent.log;
-
         while (this.state.volatile.lastApplied < this.state.volatile.commitIndex) {
             const indexToApply = this.state.volatile.lastApplied + 1;
-            const entry = log[indexToApply];
-
-            if (!entry) {
-                logger.error(`No entry at index ${indexToApply} to apply`);
+            if (!this.applySingleEntry(indexToApply)) {
                 break;
-            }
-
-            logger.info(`Applying entry at index ${indexToApply}: type=${entry.entryType}`);
-
-            let result: string = '';
-
-            if (entry.entryType === 'command' && entry.command) {
-                // Apply command to KV store
-                result = this.applyCommand(entry.command);
-                logger.debug(`Applied command: ${entry.command.type} ${entry.command.key} -> ${result}`);
-            } else if (entry.entryType === 'config' && entry.configChange) {
-                // Apply configuration change
-                this.applyConfigChange(entry.configChange);
-                result = 'OK';
-            }
-            // 'noop' entries don't need any action
-
-            // Update lastApplied
-            this.state.volatile.lastApplied = indexToApply;
-
-            // Resolve pending command if this is the leader
-            const pending = this.pendingCommands.get(indexToApply);
-            if (pending) {
-                // Clear timeout
-                if ((pending as any).timeoutId) {
-                    clearTimeout((pending as any).timeoutId);
-                }
-                pending.resolve(result);
-                this.pendingCommands.delete(indexToApply);
             }
         }
     }
 
+    private applySingleEntry(index: number): boolean {
+        const entry = this.state.persistent.log[index];
+
+        if (!entry) {
+            logger.error(`No entry at index ${index} to apply`);
+            return false;
+        }
+
+        logger.info(`Applying entry at index ${index}: type=${entry.entryType}`);
+
+        const result = this.executeEntry(entry);
+        this.state.volatile.lastApplied = index;
+        this.resolvePendingCommand(index, result);
+        return true;
+    }
+
+    private executeEntry(entry: LogEntry): string {
+        if (entry.entryType === 'command' && entry.command) {
+            return this.applyCommand(entry.command);
+        }
+        if (entry.entryType === 'config' && entry.configChange) {
+            this.applyConfigChange(entry.configChange);
+            return 'OK';
+        }
+        return ''; // noop
+    }
+
+    private resolvePendingCommand(index: number, result: string): void {
+        const pending = this.pendingCommands.get(index);
+        if (pending) {
+            if ((pending as any).timeoutId) {
+                clearTimeout((pending as any).timeoutId);
+            }
+            pending.resolve(result);
+            this.pendingCommands.delete(index);
+        }
+    }
+
     /**
-     * Apply a command to the KV store (Person 3)
+     * Apply a command to the KV store
      * 
      * @param command - Command to apply
      * @returns Result of the command
@@ -910,10 +832,7 @@ export class RaftNode extends EventEmitter implements IRaftNode {
     }
 
     /**
-     * Apply a configuration change (Person 3)
-     * 
-     * This is called when a config entry is committed (by both leaders and followers).
-     * If the change removes THIS node, we should shut down.
+     * Apply a configuration change
      * 
      * @param configChange - Configuration change to apply
      */
@@ -930,9 +849,7 @@ export class RaftNode extends EventEmitter implements IRaftNode {
             const idx = this.state.clusterConfig.findIndex(s => s.id === serverId);
 
             if (idx !== -1) {
-                // IMPORTANT: If we're the leader and removing a DIFFERENT node,
-                // we need to notify that node BEFORE removing it from our config.
-                // Otherwise, replicateToAllFollowers won't include the removed node.
+                // if leader, notify the removed node that it is being removed from our config.
                 if (this.state.nodeState === NodeState.LEADER && serverId !== this.config.nodeId) {
                     logger.info(`Sending commit notification to ${serverId} before removing from config...`);
                     // Send multiple heartbeats to ensure the removed node receives the commit
@@ -954,7 +871,7 @@ export class RaftNode extends EventEmitter implements IRaftNode {
                     }, 150);
                 }
 
-                // Now remove from cluster config
+                // remove from cluster config
                 this.state.clusterConfig.splice(idx, 1);
                 logger.info(`Config applied: Removed server ${serverId}`);
 
@@ -964,13 +881,11 @@ export class RaftNode extends EventEmitter implements IRaftNode {
                     this.state.leaderState.matchIndex.delete(serverId);
                 }
 
-                // If WE were removed, shut down this node
-                // This handles both leader and follower cases
+                // If removed, shut down the node
                 if (serverId === this.config.nodeId) {
                     logger.info('This node was removed from cluster, shutting down...');
 
-                    // If we're the leader, send heartbeats to propagate the commit before shutting down
-                    // This ensures all followers receive the updated leaderCommit
+                    // If leader, send heartbeats to propagate the commit before shutting down
                     if (this.state.nodeState === NodeState.LEADER) {
                         logger.info('Propagating commit to followers before shutdown...');
                         // Send multiple heartbeats to ensure propagation
@@ -1005,42 +920,31 @@ export class RaftNode extends EventEmitter implements IRaftNode {
     }
 
     /**
-     * Replicate to all followers INCLUDING a specific node that may have been removed
-     * This is used to send commit notifications to nodes being removed
+     * Replicate to all followers including a specific node that may have been removed
      */
     private replicateToAllFollowersIncluding(nodeId: string): void {
         if (this.state.nodeState !== NodeState.LEADER) {
             return;
         }
 
-        // Find the node info - it might have been removed from clusterConfig
+        // Find the node info
         let nodeToReplicate: ServerInfo | undefined = this.state.clusterConfig.find(s => s.id === nodeId);
 
-        // If not in clusterConfig, try to reconstruct it (assume hostname = nodeId, port = 3000)
+        // If not in clusterConfig, try reconstruct it
         if (!nodeToReplicate) {
             nodeToReplicate = { id: nodeId, address: nodeId, port: 3000 };
         }
 
-        // Replicate to this specific node
         this.replicateToFollower(nodeToReplicate);
-
-        // Also replicate to all current followers
         this.replicateToAllFollowers();
     }
 
     // ============================================================================
-    // Membership Changes (Person 1 + Person 3 Integration)
+    // Membership Changes 
     // ============================================================================
 
     /**
      * Add a new server to the cluster (with Log Replication)
-     * 
-     * This implements the membership change protocol:
-     * 1. Create config change log entry
-     * 2. Replicate to followers
-     * 3. Wait for commit (majority acknowledgment)
-     * 4. Apply config change (adding to cluster)
-     * 5. Return success
      * 
      * @param request - AddServer request
      * @returns AddServer response
@@ -1079,12 +983,11 @@ export class RaftNode extends EventEmitter implements IRaftNode {
         this.state.persistent.log.push(entry);
         logger.info(`Appended config change entry at index ${entry.index}`);
 
-        // Update our own matchIndex (leader always matches itself)
+        // Update our own matchIndex
         if (this.state.leaderState) {
             this.state.leaderState.matchIndex.set(this.config.nodeId, entry.index);
 
             // Initialize leader state for new server (before replication)
-            // This allows us to start replicating to the new server immediately
             this.state.leaderState.nextIndex.set(newServer.id, entry.index + 1);
             this.state.leaderState.matchIndex.set(newServer.id, 0);
         }
@@ -1137,13 +1040,6 @@ export class RaftNode extends EventEmitter implements IRaftNode {
     /**
      * Remove a server from the cluster (with Log Replication)
      * 
-     * This implements the membership change protocol:
-     * 1. Create config change log entry
-     * 2. Replicate to followers
-     * 3. Wait for commit (majority acknowledgment)
-     * 4. Apply config change (removing from cluster)
-     * 5. Return success
-     * 
      * @param request - RemoveServer request
      * @returns RemoveServer response
      */
@@ -1183,7 +1079,7 @@ export class RaftNode extends EventEmitter implements IRaftNode {
         this.state.persistent.log.push(entry);
         logger.info(`Appended config change entry at index ${entry.index}`);
 
-        // Update our own matchIndex (leader always matches itself)
+        // Update our own matchIndex
         if (this.state.leaderState) {
             this.state.leaderState.matchIndex.set(this.config.nodeId, entry.index);
         }
@@ -1194,7 +1090,6 @@ export class RaftNode extends EventEmitter implements IRaftNode {
             this.pendingCommands.set(entry.index, {
                 resolve: () => {
                     logger.info(`Server ${serverId} removed from cluster. New cluster size: ${this.state.clusterConfig.length}`);
-                    // Note: If this node was removed, applyConfigChange handles the shutdown
                     resolve({
                         success: true,
                         leaderId: this.config.nodeId,

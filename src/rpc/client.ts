@@ -1,10 +1,8 @@
 /**
- * JSON-RPC Client Module
- * 
- * This module provides a client for making JSON-RPC 2.0 calls to other nodes
- * in the Raft cluster. It handles request formatting, HTTP transport, response
+ * JSON-RPC Client Module, provides a client for making JSON-RPC 2.0 calls to other nodes
+ * handles request formatting, HTTP transport, response
  * parsing, and error handling.
- * 
+
  * @module rpc/client
  */
 
@@ -27,16 +25,13 @@ const logger = new Logger('RPC-Client');
  * Configuration options for the RPC client
  */
 export interface RpcClientOptions {
-    /** Request timeout in milliseconds (default: 5000) */
     timeout?: number;
-    /** Number of retry attempts (default: 0) */
     retries?: number;
-    /** Delay between retries in milliseconds (default: 100) */
     retryDelay?: number;
 }
 
 const DEFAULT_OPTIONS: Required<RpcClientOptions> = {
-    timeout: 3000,  // Increased to handle extreme network delay (up to 1.4s)
+    timeout: 3000,
     retries: 0,
     retryDelay: 100,
 };
@@ -181,12 +176,6 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * RPC Client class for making calls to Raft nodes
- * 
- * Usage:
- * ```typescript
- * const client = new RpcClient();
- * const result = await client.call(serverInfo, 'method_name', { param: 'value' });
- * ```
  */
 export class RpcClient {
     private options: Required<RpcClientOptions>;
@@ -229,9 +218,7 @@ export class RpcClient {
 
             } catch (error) {
                 lastError = error as Error;
-                // Don't log network errors - they're expected when nodes are down
-                // Common errors: "Request timeout", "ECONNRESET", "socket hang up"
-                // Only log unexpected errors at WARN level
+                // Only log unexpected errors at warn level
                 const isNetworkError = lastError.message.includes('timeout') ||
                     lastError.message.includes('ECONNRESET') ||
                     lastError.message.includes('hang up') ||
@@ -252,7 +239,6 @@ export class RpcClient {
 
     /**
      * Make an RPC call and return the raw response (without parsing)
-     * Useful when you need to check for specific error types like NOT_LEADER
      * 
      * @param server - Target server info
      * @param method - RPC method name

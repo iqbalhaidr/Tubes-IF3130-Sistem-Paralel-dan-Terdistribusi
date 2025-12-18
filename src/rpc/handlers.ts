@@ -1,13 +1,6 @@
 /**
- * RPC Handlers Module
- * 
- * This module provides the RPC method handlers that connect incoming RPC requests
- * to the Raft node logic. Handlers for Person 2 and Person 3 features are stubbed
- * for them to implement.
- * 
- * Person 1 implements: execute, request_log, add_server, remove_server handlers
- * Person 2 implements: request_vote handler
- * Person 3 implements: append_entries handler
+ * RPC Handlers Module, provides the RPC method handlers that connect incoming RPC requests
+ * to the Raft node logic. 
  * 
  * @module rpc/handlers
  */
@@ -35,8 +28,7 @@ import { Logger } from '../utils/logger';
 const logger = new Logger('RPC-Handlers');
 
 /**
- * Interface for the Raft Node that handlers interact with
- * This allows loose coupling between handlers and the actual Raft implementation
+ * Interface for the Raft Node that handlers interact 
  */
 export interface IRaftNode {
     // State getters
