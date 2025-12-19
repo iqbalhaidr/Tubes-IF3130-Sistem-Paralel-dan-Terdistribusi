@@ -61,7 +61,7 @@ export interface IRaftNode {
  */
 export function createRpcHandlers(node: IRaftNode): Record<string, RpcHandler> {
     /**
-     * Check if this node is the leader, throw error if not
+     * Check if node is the leader, throw error if not
      */
     function requireLeader(): void {
         if (node.getNodeState() !== NodeState.LEADER) {
@@ -133,17 +133,13 @@ export function createRpcHandlers(node: IRaftNode): Record<string, RpcHandler> {
             const command = params.command.toLowerCase();
             const args = params.args || [];
 
-            // Ping is a special case - doesn't require leader
-            // But according to spec, all client requests go to leader
-            // So we still require leader for consistency
 
-            // Check if this is a read-only command (doesn't modify state)
-            const readOnlyCommands = ['get'];
+            // Check if this is a read-only command 
+            const readOnlyCommands = ['ping', 'get', 'strln'];
             const isReadOnly = readOnlyCommands.includes(command);
 
-            // For now, all commands require leader (can optimize reads later)
             // Check if we're the leader
-            if (node.getNodeState() !== NodeState.LEADER && !isReadOnly) {
+            if (node.getNodeState() !== NodeState.LEADER) {
                 return {
                     success: false,
                     result: '',
@@ -174,7 +170,6 @@ export function createRpcHandlers(node: IRaftNode): Record<string, RpcHandler> {
         /**
          * RequestLog RPC handler
          * Returns the leader's log entries.
-         * Only the leader can respond to this.
          */
         [RPC_METHODS.REQUEST_LOG]: async (params: RequestLogRequest): Promise<RequestLogResponse> => {
             logger.info('RequestLog received');

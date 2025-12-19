@@ -342,16 +342,16 @@ export class RaftClient {
     async sendToNode<T>(targetNode: string, method: string, params: any): Promise<T> {
         const server = this.parseServerAddress(targetNode);
         this.log(`Sending ${method} directly to ${server.id}`);
-        
+
         try {
             const request = this.createRequest(method, params);
             const response = await this.sendRequest(server, request);
-            
+
             // Handle RPC error
             if ('error' in response) {
                 throw new Error(response.error.message);
             }
-            
+
             return response.result as T;
         } catch (error) {
             this.log(`Error: ${(error as Error).message}`);
@@ -508,6 +508,7 @@ function parseCommandLine(line: string): string[] {
     let current = '';
     let inQuotes = false;
     let quoteChar = '';
+    let wasQuoted = false;
 
     for (let i = 0; i < line.length; i++) {
         const char = line[i];
@@ -515,6 +516,7 @@ function parseCommandLine(line: string): string[] {
         if (inQuotes) {
             if (char === quoteChar) {
                 inQuotes = false;
+                wasQuoted = true;
             } else {
                 current += char;
             }
@@ -522,16 +524,17 @@ function parseCommandLine(line: string): string[] {
             inQuotes = true;
             quoteChar = char;
         } else if (char === ' ') {
-            if (current.length > 0) {
+            if (current.length > 0 || wasQuoted) {
                 tokens.push(current);
                 current = '';
+                wasQuoted = false;
             }
         } else {
             current += char;
         }
     }
 
-    if (current.length > 0) {
+    if (current.length > 0 || wasQuoted) {
         tokens.push(current);
     }
 
