@@ -332,22 +332,58 @@ export class RaftClient {
     // ============================================================================
 
     /**
+     * Send a command to a specific node without auto-redirect
+     * 
+     * @param targetNode - Target node address (format: "node1" or "node1:3000")
+     * @param method - RPC method name
+     * @param params - Method parameters
+     * @returns Response from the target node
+     */
+    async sendToNode<T>(targetNode: string, method: string, params: any): Promise<T> {
+        const server = this.parseServerAddress(targetNode);
+        this.log(`Sending ${method} directly to ${server.id}`);
+        
+        try {
+            const request = this.createRequest(method, params);
+            const response = await this.sendRequest(server, request);
+            
+            // Handle RPC error
+            if ('error' in response) {
+                throw new Error(response.error.message);
+            }
+            
+            return response.result as T;
+        } catch (error) {
+            this.log(`Error: ${(error as Error).message}`);
+            throw error;
+        }
+    }
+
+    /**
      * Execute a key-value store command
      * 
      * @param command - Command to execute (ping, get, set, strln, del, append)
      * @param args - Command arguments
+     * @param targetNode - Optional target node to send directly (no auto-redirect)
      * @returns Command result
      */
-    async execute(command: string, args: string[]): Promise<ExecuteResponse> {
+    async execute(command: string, args: string[], targetNode?: string): Promise<ExecuteResponse> {
+        if (targetNode) {
+            return this.sendToNode<ExecuteResponse>(targetNode, 'execute', { command, args });
+        }
         return this.sendWithRedirect<ExecuteResponse>('execute', { command, args });
     }
 
     /**
      * Request the leader's log
      * 
+     * @param targetNode - Optional target node to send directly (no auto-redirect)
      * @returns Log entries from the leader
      */
-    async requestLog(): Promise<RequestLogResponse> {
+    async requestLog(targetNode?: string): Promise<RequestLogResponse> {
+        if (targetNode) {
+            return this.sendToNode<RequestLogResponse>(targetNode, 'request_log', {});
+        }
         return this.sendWithRedirect<RequestLogResponse>('request_log', {});
     }
 
@@ -357,10 +393,14 @@ export class RaftClient {
      * @param serverId - New server ID
      * @param address - New server address
      * @param port - New server port
+     * @param targetNode - Optional target node to send directly (no auto-redirect)
      * @returns Add server response
      */
-    async addServer(serverId: string, address: string, port: number): Promise<AddServerResponse> {
+    async addServer(serverId: string, address: string, port: number, targetNode?: string): Promise<AddServerResponse> {
         const newServer: ServerInfo = { id: serverId, address, port };
+        if (targetNode) {
+            return this.sendToNode<AddServerResponse>(targetNode, 'add_server', { newServer });
+        }
         return this.sendWithRedirect<AddServerResponse>('add_server', { newServer });
     }
 
@@ -368,9 +408,13 @@ export class RaftClient {
      * Remove a server from the cluster
      * 
      * @param serverId - Server ID to remove
+     * @param targetNode - Optional target node to send directly (no auto-redirect)
      * @returns Remove server response
      */
-    async removeServer(serverId: string): Promise<RemoveServerResponse> {
+    async removeServer(serverId: string, targetNode?: string): Promise<RemoveServerResponse> {
+        if (targetNode) {
+            return this.sendToNode<RemoveServerResponse>(targetNode, 'remove_server', { serverId });
+        }
         return this.sendWithRedirect<RemoveServerResponse>('remove_server', { serverId });
     }
 
@@ -405,24 +449,29 @@ function printHelp(): void {
 ${COLORS.cyan}Raft Key-Value Store Client${COLORS.reset}
 ${COLORS.gray}━━━━━━━━━━━━━━━━━━━━━━━━━━━━${COLORS.reset}
 
-${COLORS.yellow}Commands:${COLORS.reset}
-  ${COLORS.green}ping${COLORS.reset}                      Check connection to the server
-  ${COLORS.green}get${COLORS.reset} <key>                 Get value for key
-  ${COLORS.green}set${COLORS.reset} <key> <value>         Set key to value
-  ${COLORS.green}strln${COLORS.reset} <key>               Get string length of value
-  ${COLORS.green}del${COLORS.reset} <key>                 Delete key and return value
-  ${COLORS.green}append${COLORS.reset} <key> <value>      Append to value
+${COLORS.yellow}Commands:${COLORS.reset} ${COLORS.gray}(optional {node} targets a specific node without auto-redirect)${COLORS.reset}
+  ${COLORS.green}ping${COLORS.reset} {node}                        Check connection to the server
+  ${COLORS.green}get${COLORS.reset} <key> {node}                   Get value for key ${COLORS.gray}(works on any node)${COLORS.reset}
+  ${COLORS.green}set${COLORS.reset} <key> <value> {node}           Set key to value
+  ${COLORS.green}strln${COLORS.reset} <key> {node}                 Get string length of value ${COLORS.gray}(works on any node)${COLORS.reset}
+  ${COLORS.green}del${COLORS.reset} <key> {node}                   Delete key and return value
+  ${COLORS.green}append${COLORS.reset} <key> <value> {node}        Append to value
   
 ${COLORS.yellow}Cluster Management:${COLORS.reset}
-  ${COLORS.green}request_log${COLORS.reset}               Get the leader's log
-  ${COLORS.green}add_server${COLORS.reset} <id> <addr> <port>  Add a new server
-  ${COLORS.green}remove_server${COLORS.reset} <id>        Remove a server
+  ${COLORS.green}request_log${COLORS.reset} {node}                 Get the leader's log
+  ${COLORS.green}add_server${COLORS.reset} <id> <addr> <port> {node}  Add a new server
+  ${COLORS.green}remove_server${COLORS.reset} <id> {node}          Remove a server
   
 ${COLORS.yellow}Client Commands:${COLORS.reset}
-  ${COLORS.green}connect${COLORS.reset} <addr:port>       Add a server to connect to
-  ${COLORS.green}debug${COLORS.reset}                     Toggle debug mode
-  ${COLORS.green}help${COLORS.reset}                      Show this help message
-  ${COLORS.green}exit${COLORS.reset}                      Exit the CLI
+  ${COLORS.green}connect${COLORS.reset} <addr:port>               Add a server to connect to
+  ${COLORS.green}debug${COLORS.reset}                             Toggle debug mode
+  ${COLORS.green}help${COLORS.reset}                              Show this help message
+  ${COLORS.green}exit${COLORS.reset}                              Exit the CLI
+
+${COLORS.yellow}Node Targeting:${COLORS.reset}
+  When {node} is specified (e.g. ${COLORS.cyan}node1${COLORS.reset} or ${COLORS.cyan}node1:3000${COLORS.reset}), the command is sent
+  directly to that node. If the node is not the leader, write commands will
+  be refused with leader info. Read commands (${COLORS.green}get${COLORS.reset}, ${COLORS.green}strln${COLORS.reset}, ${COLORS.green}ping${COLORS.reset}) work on any node.
 `);
 }
 
@@ -577,39 +626,84 @@ Type ${COLORS.green}help${COLORS.reset} for available commands.
                     break;
                 }
 
-                case 'ping':
+                case 'ping': {
+                    // ping takes optional node argument
+                    const targetNode = args.length > 0 ? args[0] : undefined;
+                    const response = await client.execute(command, [], targetNode);
+                    printResponse(response);
+                    break;
+                }
+
                 case 'get':
+                case 'strln': {
+                    // get <key> {node} - requires 1 arg, optional node
+                    if (args.length < 1) {
+                        console.log(`${COLORS.red}Usage: ${command} <key> {node}${COLORS.reset}`);
+                        break;
+                    }
+                    const key = args[0];
+                    const targetNode = args.length > 1 ? args[1] : undefined;
+                    const response = await client.execute(command, [key], targetNode);
+                    printResponse(response);
+                    break;
+                }
+
                 case 'set':
-                case 'strln':
-                case 'del':
                 case 'append': {
-                    const response = await client.execute(command, args);
+                    // set <key> <value> {node} - requires 2 args, optional node
+                    if (args.length < 2) {
+                        console.log(`${COLORS.red}Usage: ${command} <key> <value> {node}${COLORS.reset}`);
+                        break;
+                    }
+                    const key = args[0];
+                    const value = args[1];
+                    const targetNode = args.length > 2 ? args[2] : undefined;
+                    const response = await client.execute(command, [key, value], targetNode);
+                    printResponse(response);
+                    break;
+                }
+
+                case 'del': {
+                    // del <key> {node} - requires 1 arg, optional node
+                    if (args.length < 1) {
+                        console.log(`${COLORS.red}Usage: del <key> {node}${COLORS.reset}`);
+                        break;
+                    }
+                    const key = args[0];
+                    const targetNode = args.length > 1 ? args[1] : undefined;
+                    const response = await client.execute(command, [key], targetNode);
                     printResponse(response);
                     break;
                 }
 
                 case 'request_log': {
-                    const response = await client.requestLog();
+                    // request_log {node} - optional node
+                    const targetNode = args.length > 0 ? args[0] : undefined;
+                    const response = await client.requestLog(targetNode);
                     printResponse(response);
                     break;
                 }
 
                 case 'add_server': {
+                    // add_server <id> <address> <port> {node} - requires 3 args, optional node
                     if (args.length < 3) {
-                        console.log(`${COLORS.red}Usage: add_server <id> <address> <port>${COLORS.reset}`);
+                        console.log(`${COLORS.red}Usage: add_server <id> <address> <port> {node}${COLORS.reset}`);
                         break;
                     }
-                    const response = await client.addServer(args[0], args[1], parseInt(args[2], 10));
+                    const targetNode = args.length > 3 ? args[3] : undefined;
+                    const response = await client.addServer(args[0], args[1], parseInt(args[2], 10), targetNode);
                     printResponse(response);
                     break;
                 }
 
                 case 'remove_server': {
+                    // remove_server <id> {node} - requires 1 arg, optional node
                     if (args.length < 1) {
-                        console.log(`${COLORS.red}Usage: remove_server <id>${COLORS.reset}`);
+                        console.log(`${COLORS.red}Usage: remove_server <id> {node}${COLORS.reset}`);
                         break;
                     }
-                    const response = await client.removeServer(args[0]);
+                    const targetNode = args.length > 1 ? args[1] : undefined;
+                    const response = await client.removeServer(args[0], targetNode);
                     printResponse(response);
                     break;
                 }
