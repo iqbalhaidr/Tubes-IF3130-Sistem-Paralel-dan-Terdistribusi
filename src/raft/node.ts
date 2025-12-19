@@ -648,7 +648,7 @@ export class RaftNode extends EventEmitter implements IRaftNode {
     }
 
     /**
-     * Replicate log entries to a single follower (Person 3)
+     * Replicate log entries to a single follower
      * 
      * @param node - Follower to replicate to
      */

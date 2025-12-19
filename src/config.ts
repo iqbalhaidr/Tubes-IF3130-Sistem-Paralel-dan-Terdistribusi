@@ -51,32 +51,24 @@ function parseClusterNodes(clusterNodesStr: string): ServerInfo[] {
 /**
  * Load configuration from environment variables with default values
  * 
- * Environment variables:
- * - NODE_ID: Unique identifier for this node (default: "node1")
- * - PORT: Port to listen on (default: 3000)
- * - CLUSTER_NODES: Comma-separated list of nodes (default: single node)
- * - ELECTION_TIMEOUT_MIN: Minimum election timeout in ms (default: 150)
- * - ELECTION_TIMEOUT_MAX: Maximum election timeout in ms (default: 300)
- * - HEARTBEAT_INTERVAL: Heartbeat interval in ms (default: 50)
- * 
  * @returns RaftConfig object with loaded configuration
  */
 export function loadConfig(): RaftConfig {
     const nodeId = process.env.NODE_ID || 'node1';
     const port = parseInt(process.env.PORT || '3000', 10);
 
-    // Default cluster is just this node if not specified
+    // Default cluster
     const defaultCluster = `${nodeId}:${port}`;
     const clusterNodesStr = process.env.CLUSTER_NODES || defaultCluster;
     const clusterNodes = parseClusterNodes(clusterNodesStr);
 
-    // Election timeout should be random between min and max
+    // Election timeout randomized between min and max
     const electionTimeoutMin = parseInt(process.env.ELECTION_TIMEOUT_MIN || '150', 10);
     const electionTimeoutMax = parseInt(process.env.ELECTION_TIMEOUT_MAX || '300', 10);
 
     const heartbeatInterval = parseInt(process.env.HEARTBEAT_INTERVAL || '50', 10);
 
-    // JOIN_MODE: if true, this node is being added dynamically and should not vote/elect
+    // if true join mode, this node is being added dynamically and should not vote/elect
     const joinMode = process.env.JOIN_MODE === 'true';
 
     return {

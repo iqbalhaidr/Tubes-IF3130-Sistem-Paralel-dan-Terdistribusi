@@ -1,5 +1,5 @@
 /**
- * Log Replication Unit Tests (Person 3)
+ * Log Replication Unit Tests
  * 
  * Tests for the log replication mechanism in Raft:
  * - Log entry creation and management

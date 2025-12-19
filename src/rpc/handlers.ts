@@ -38,17 +38,17 @@ export interface IRaftNode {
     getLeaderId(): string | null;
     getLeaderAddress(): string | null;
 
-    // For Person 2: Leader Election
+    // Leader Election
     handleRequestVote(request: RequestVoteRequest): Promise<RequestVoteResponse>;
 
-    // For Person 3: Log Replication
+    // Log Replication
     handleAppendEntries(request: AppendEntriesRequest): Promise<AppendEntriesResponse>;
 
-    // For Person 3: Client commands
+    // Client commands
     executeCommand(command: string, args: string[]): Promise<string>;
     getLog(): any[];
 
-    // For Person 1: Membership changes
+    // Membership changes
     handleAddServer(request: AddServerRequest): Promise<AddServerResponse>;
     handleRemoveServer(request: RemoveServerRequest): Promise<RemoveServerResponse>;
 }
@@ -71,9 +71,7 @@ export function createRpcHandlers(node: IRaftNode): Record<string, RpcHandler> {
 
     return {
         /**
-         * RequestVote RPC handler (Person 2 implements the actual logic)
-         * 
-         * Called by candidates during leader election to request votes.
+         * RequestVote RPC handler (
          */
         [RPC_METHODS.REQUEST_VOTE]: async (params: RequestVoteRequest): Promise<RequestVoteResponse> => {
             logger.info(`RequestVote from ${params.candidateId} for term ${params.term}`);
@@ -86,7 +84,7 @@ export function createRpcHandlers(node: IRaftNode): Record<string, RpcHandler> {
                 throw rpcError(RPC_ERROR_CODES.INVALID_PARAMS, 'Invalid RequestVote parameters');
             }
 
-            // Delegate to Raft node (Person 2's implementation)
+            // Delegate to Raft node 
             const response = await node.handleRequestVote(params);
 
             logger.info(`RequestVote response: voteGranted=${response.voteGranted}, term=${response.term}`);
@@ -94,9 +92,7 @@ export function createRpcHandlers(node: IRaftNode): Record<string, RpcHandler> {
         },
 
         /**
-         * AppendEntries RPC handler (Person 3 implements the actual logic)
-         * 
-         * Called by leader to replicate log entries and as heartbeat.
+         * AppendEntries RPC handler
          */
         [RPC_METHODS.APPEND_ENTRIES]: async (params: AppendEntriesRequest): Promise<AppendEntriesResponse> => {
             logger.debug(`AppendEntries from ${params.leaderId}, term=${params.term}, entries=${params.entries?.length || 0}`);
@@ -115,7 +111,7 @@ export function createRpcHandlers(node: IRaftNode): Record<string, RpcHandler> {
                 params.entries = [];
             }
 
-            // Delegate to Raft node (Person 3's implementation)
+            // Delegate to Raft node
             const response = await node.handleAppendEntries(params);
 
             logger.debug(`AppendEntries response: success=${response.success}, term=${response.term}`);
@@ -123,10 +119,8 @@ export function createRpcHandlers(node: IRaftNode): Record<string, RpcHandler> {
         },
 
         /**
-         * Execute RPC handler (Person 1 - routing, Person 3 - actual execution)
-         * 
-         * Executes a client command (ping, get, set, strln, del, append).
-         * Only the leader can execute commands.
+         * Execute RPC handler
+         * Executes a client command (ping, get, set, strln, del, append), leader execute conmand.
          */
         [RPC_METHODS.EXECUTE]: async (params: ExecuteRequest): Promise<ExecuteResponse> => {
             logger.info(`Execute command: ${params.command} ${params.args?.join(' ') || ''}`);
@@ -159,7 +153,7 @@ export function createRpcHandlers(node: IRaftNode): Record<string, RpcHandler> {
             }
 
             try {
-                // Execute the command (delegated to Person 3's implementation)
+                // Execute the command
                 const result = await node.executeCommand(command, args);
 
                 return {
@@ -178,8 +172,7 @@ export function createRpcHandlers(node: IRaftNode): Record<string, RpcHandler> {
         },
 
         /**
-         * RequestLog RPC handler (Person 1)
-         * 
+         * RequestLog RPC handler
          * Returns the leader's log entries.
          * Only the leader can respond to this.
          */
@@ -217,10 +210,8 @@ export function createRpcHandlers(node: IRaftNode): Record<string, RpcHandler> {
         },
 
         /**
-         * AddServer RPC handler (Person 1)
-         * 
-         * Adds a new server to the cluster.
-         * Only the leader can process membership changes.
+         * AddServer RPC handler 
+         * Adds a new server to the cluster (leader process).
          */
         [RPC_METHODS.ADD_SERVER]: async (params: AddServerRequest): Promise<AddServerResponse> => {
             logger.info(`AddServer requested for: ${params.newServer?.id}`);
@@ -247,10 +238,8 @@ export function createRpcHandlers(node: IRaftNode): Record<string, RpcHandler> {
         },
 
         /**
-         * RemoveServer RPC handler (Person 1)
-         * 
-         * Removes a server from the cluster.
-         * Only the leader can process membership changes.
+         * RemoveServer RPC handler 
+         * Removes a server from the cluster (leader process).
          */
         [RPC_METHODS.REMOVE_SERVER]: async (params: RemoveServerRequest): Promise<RemoveServerResponse> => {
             logger.info(`RemoveServer requested for: ${params.serverId}`);

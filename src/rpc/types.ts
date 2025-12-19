@@ -72,13 +72,9 @@ export const RPC_ERROR_CODES = {
  * RequestVote RPC request (from Candidate to all other nodes) for leader election.
  */
 export interface RequestVoteRequest {
-    /** Candidate's term number */
     term: number;
-    /** Candidate requesting the vote */
     candidateId: string;
-    /** Index of candidate's last log entry */
     lastLogIndex: number;
-    /** Term of candidate's last log entry */
     lastLogTerm: number;
 }
 
@@ -86,32 +82,23 @@ export interface RequestVoteRequest {
  * RequestVote RPC response
  */
 export interface RequestVoteResponse {
-    /** Current term, for candidate to update itself */
     term: number;
-    /** True if candidate received vote */
     voteGranted: boolean;
 }
 
 // ============================================================================
-// Raft RPC Types - AppendEntries (Log Replication - Person 3)
+// Raft RPC Types - AppendEntries 
 // ============================================================================
 
 /**
- * AppendEntries RPC request (from Leader to Followers)
- * Used for log replication and as heartbeat when entries is empty.
+ * AppendEntries RPC request (from Leader to Followers) for log replication and as heartbeat when entries empty.
  */
 export interface AppendEntriesRequest {
-    /** Leader's term */
     term: number;
-    /** Leader's ID so followers can redirect clients */
     leaderId: string;
-    /** Index of log entry immediately preceding new ones */
     prevLogIndex: number;
-    /** Term of prevLogIndex entry */
     prevLogTerm: number;
-    /** Log entries to store (empty for heartbeat) */
     entries: LogEntry[];
-    /** Leader's commitIndex */
     leaderCommit: number;
 }
 
@@ -119,23 +106,19 @@ export interface AppendEntriesRequest {
  * AppendEntries RPC response
  */
 export interface AppendEntriesResponse {
-    /** Current term, for leader to update itself */
     term: number;
-    /** True if follower contained entry matching prevLogIndex and prevLogTerm */
     success: boolean;
-    /** (Optional) The follower's last log index, for faster log catchup */
     matchIndex?: number;
 }
 
 // ============================================================================
-// Membership Change RPC Types (Person 1)
+// Membership Change RPC Types
 // ============================================================================
 
 /**
- * AddServer RPC request - Adds a new server to the cluster
+ * AddServer RPC request -> Adds a new server to the cluster
  */
 export interface AddServerRequest {
-    /** Information about the new server to add */
     newServer: ServerInfo;
 }
 
@@ -143,11 +126,8 @@ export interface AddServerRequest {
  * AddServer RPC response
  */
 export interface AddServerResponse {
-    /** Whether the operation was successful */
     success: boolean;
-    /** Current leader ID (for redirect if not leader) */
     leaderId: string | null;
-    /** Error message if failed */
     error?: string;
 }
 
@@ -163,28 +143,23 @@ export interface RemoveServerRequest {
  * RemoveServer RPC response
  */
 export interface RemoveServerResponse {
-    /** Whether the operation was successful */
     success: boolean;
-    /** Current leader ID (for redirect if not leader) */
     leaderId: string | null;
-    /** Error message if failed */
     error?: string;
 }
 
 // ============================================================================
-// Client Interface RPC Types (Person 1)
+// Client Interface RPC Types 
 // ============================================================================
 
 /** Valid client commands for the key-value store */
 export type ClientCommand = 'ping' | 'get' | 'set' | 'strln' | 'del' | 'append';
 
 /**
- * Execute RPC request - Client request to execute a command
+ * Execute RPC request -> Client request to execute a command
  */
 export interface ExecuteRequest {
-    /** Command to execute */
     command: ClientCommand;
-    /** Arguments for the command */
     args: string[];
 }
 
@@ -192,36 +167,26 @@ export interface ExecuteRequest {
  * Execute RPC response
  */
 export interface ExecuteResponse {
-    /** Whether the operation was successful */
     success: boolean;
-    /** Result of the operation */
     result: string;
-    /** Current leader ID (for redirect if not leader) */
     leaderId: string | null;
-    /** Leader address for client redirect */
     leaderAddress?: string;
 }
 
 /**
- * RequestLog RPC request - Get the leader's log
+ * RequestLog RPC request -> Get the leader's log
  */
 export interface RequestLogRequest {
-    // Empty - no parameters needed
 }
 
 /**
  * RequestLog RPC response
  */
 export interface RequestLogResponse {
-    /** Whether the operation was successful */
     success: boolean;
-    /** Log entries from the leader */
     log: LogEntry[];
-    /** Current leader ID (for redirect if not leader) */
     leaderId: string | null;
-    /** Leader address for client redirect */
     leaderAddress?: string;
-    /** Error message if failed */
     error?: string;
 }
 

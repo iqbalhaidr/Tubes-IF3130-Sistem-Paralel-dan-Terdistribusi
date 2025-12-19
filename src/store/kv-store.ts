@@ -13,27 +13,17 @@ const logger = new Logger('KV-Store');
  * Interface for the Key-Value Store
  */
 export interface IKeyValueStore {
-    /** Get a value by key */
     get(key: string): string;
-    /** Set a key to a value */
     set(key: string, value: string): void;
-    /** Get the length of a value */
     strln(key: string): number;
-    /** Delete a key and return its value */
     del(key: string): string;
-    /** Append to a value (creates empty string if key doesn't exist) */
     append(key: string, value: string): void;
-    /** Get all entries (for debugging/snapshot) */
     getAll(): Map<string, string>;
-    /** Clear all entries */
     clear(): void;
 }
 
 /**
- * In-memory Key-Value Store implementation
- * 
- * This is a simple implementation that Person 3 will use to apply
- * committed log entries.
+ * In-memory Key-Value Store implementation -> for committed log entries
  */
 export class KeyValueStore implements IKeyValueStore {
     private store: Map<string, string> = new Map();
