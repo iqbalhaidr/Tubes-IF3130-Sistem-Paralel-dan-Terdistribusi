@@ -144,12 +144,12 @@ export function createRpcHandlers(node: IRaftNode): Record<string, RpcHandler> {
             // So we still require leader for consistency
 
             // Check if this is a read-only command (doesn't modify state)
-            const readOnlyCommands = ['ping', 'get', 'strln'];
+            const readOnlyCommands = ['get', 'strln'];
             const isReadOnly = readOnlyCommands.includes(command);
 
             // For now, all commands require leader (can optimize reads later)
             // Check if we're the leader
-            if (node.getNodeState() !== NodeState.LEADER) {
+            if (node.getNodeState() !== NodeState.LEADER && !isReadOnly) {
                 return {
                     success: false,
                     result: '',
