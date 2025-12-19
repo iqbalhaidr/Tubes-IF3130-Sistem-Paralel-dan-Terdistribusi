@@ -435,6 +435,20 @@ export class RaftClient {
     clearLeaderCache(): void {
         this.cachedLeader = null;
     }
+
+    /**
+     * Get list of known servers
+     */
+    getKnownServers(): ServerInfo[] {
+        return [...this.servers];
+    }
+
+    /**
+     * Get cached leader info
+     */
+    getCachedLeader(): ServerInfo | null {
+        return this.cachedLeader;
+    }
 }
 
 // ============================================================================
@@ -442,9 +456,9 @@ export class RaftClient {
 // ============================================================================
 
 /**
- * Print help message
+ * Print help message with known servers
  */
-function printHelp(): void {
+function printHelp(servers?: ServerInfo[], leader?: ServerInfo | null): void {
     console.log(`
 ${COLORS.cyan}Raft Key-Value Store Client${COLORS.reset}
 ${COLORS.gray}━━━━━━━━━━━━━━━━━━━━━━━━━━━━${COLORS.reset}
@@ -473,6 +487,17 @@ ${COLORS.yellow}Node Targeting:${COLORS.reset}
   directly to that node. If the node is not the leader, write commands will
   be refused with leader info. Read commands (${COLORS.green}get${COLORS.reset}, ${COLORS.green}strln${COLORS.reset}, ${COLORS.green}ping${COLORS.reset}) work on any node.
 `);
+
+    // Display known servers if available
+    if (servers && servers.length > 0) {
+        console.log(`${COLORS.yellow}Known Servers:${COLORS.reset}`);
+        for (const server of servers) {
+            const isLeader = leader && leader.id === server.id;
+            const leaderTag = isLeader ? ` ${COLORS.magenta}(LEADER)${COLORS.reset}` : '';
+            console.log(`  ${COLORS.cyan}${server.id}${COLORS.reset} - ${server.address}:${server.port}${leaderTag}`);
+        }
+        console.log('');
+    }
 }
 
 /**
@@ -598,7 +623,7 @@ Type ${COLORS.green}help${COLORS.reset} for available commands.
         try {
             switch (command) {
                 case 'help':
-                    printHelp();
+                    printHelp(client.getKnownServers(), client.getCachedLeader());
                     break;
 
                 case 'exit':
